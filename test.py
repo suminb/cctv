@@ -43,6 +43,6 @@ video_entry = gdata.youtube.YouTubeVideoEntry(media=my_media_group,
                                               geo=where)
 
 # set the path for the video file binary
-video_file_location = argv[1]
+video_file_location = sys.argv[1]
 
 new_entry = yt_service.InsertVideoEntry(video_entry, video_file_location)

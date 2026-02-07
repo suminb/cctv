@@ -135,9 +135,7 @@ def check_consolidation_status():
                 # Delete HLS files for this hour
                 try:
                     for f in os.listdir(ARCHIVE_PATH):
-                        if f.startswith(identifier) and (
-                            f.endswith(".ts") or f.endswith(".m3u8")
-                        ):
+                        if f.startswith(f"{identifier}_segment_") or f == f"playlist_{identifier}.m3u8":
                             file_to_delete = os.path.join(ARCHIVE_PATH, f)
                             os.remove(file_to_delete)
                             print(f"Deleted HLS file: {file_to_delete}")

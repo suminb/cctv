@@ -37,7 +37,7 @@ spec:
       containers:
         - name: archiver
           # IMPORTANT: Replace this with the actual path to your built image
-          image: zot.whiterabbit.co.kr/app/cctv:test
+          image: zot.whiterabbit.co.kr/app/cctv:latest
           imagePullPolicy: Always
           # --- Environment Variables ---
           env:

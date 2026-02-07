@@ -9,31 +9,34 @@ RTSP_URL = os.environ.get("RTSP_URL")
 ARCHIVE_PATH = os.environ.get("ARCHIVE_PATH", "/archive")
 RETENTION_DAYS = int(os.environ.get("RETENTION_DAYS", 90))
 SEGMENT_TIME_SECONDS = 10
+CONSOLIDATION_CHECK_INTERVAL_SECONDS = 60  # Check every minute for hourly rollover
 CLEANUP_INTERVAL_SECONDS = 3600  # 1 hour
 
 ffmpeg_process = None
-current_process_date = None
+current_process_hour_identifier = None  # YYYY-MM-DD-HH
 last_cleanup_time = time.time()
 
-
-def get_current_date_str():
-    """Returns the current date as YYYY-MM-DD."""
-    return datetime.utcnow().strftime("%Y-%m-%d")
+# Store PIDs for consolidation tasks, if any
+consolidation_processes = {}
 
 
-def start_ffmpeg_process(date_str):
-    """Starts a new ffmpeg process for the given date."""
-    global ffmpeg_process, current_process_date
+def get_current_hour_identifier():
+    """Returns the current date and hour as YYYY-MM-DD-HH."""
+    return datetime.utcnow().strftime("%Y-%m-%d-%H")
+
+
+def start_ffmpeg_process(hour_identifier):
+    """Starts a new ffmpeg process for the given hour identifier."""
+    global ffmpeg_process, current_process_hour_identifier
 
     if not RTSP_URL:
         print("Error: RTSP_URL environment variable is not set. Exiting.")
         exit(1)
 
-    # Ensure archive path exists
     os.makedirs(ARCHIVE_PATH, exist_ok=True)
 
-    playlist_path = os.path.join(ARCHIVE_PATH, f"playlist_{date_str}.m3u8")
-    segment_filename = os.path.join(ARCHIVE_PATH, f"{date_str}_segment_%05d.ts")
+    playlist_path = os.path.join(ARCHIVE_PATH, f"playlist_{hour_identifier}.m3u8")
+    segment_filename = os.path.join(ARCHIVE_PATH, f"{hour_identifier}_segment_%05d.ts")
 
     command = [
         "ffmpeg",
@@ -48,17 +51,16 @@ def start_ffmpeg_process(date_str):
         "-hls_time",
         str(SEGMENT_TIME_SECONDS),
         "-hls_list_size",
-        "0",  # Keep all segments in the playlist for the day
+        "0",
         "-hls_segment_filename",
         segment_filename,
         playlist_path,
     ]
 
-    print(f"DEBUG: FFMPEG command being executed: {command}")
-    print(f"Starting ffmpeg for date {date_str}: {' '.join(command)}")
-    # Start the process in a new process group
+    print(f"DEBUG: FFMPEG command being executed for HLS: {command}")
+    print(f"Starting ffmpeg for hour {hour_identifier}...")
     ffmpeg_process = subprocess.Popen(command, preexec_fn=os.setsid)
-    current_process_date = date_str
+    current_process_hour_identifier = hour_identifier
 
 
 def stop_ffmpeg_process():
@@ -66,7 +68,6 @@ def stop_ffmpeg_process():
     global ffmpeg_process
     if ffmpeg_process and ffmpeg_process.poll() is None:
         print(f"Gracefully stopping ffmpeg process (PID: {ffmpeg_process.pid})...")
-        # Send SIGTERM to the entire process group
         os.killpg(os.getpgid(ffmpeg_process.pid), signal.SIGTERM)
         try:
             ffmpeg_process.wait(timeout=30)
@@ -77,30 +78,107 @@ def stop_ffmpeg_process():
     ffmpeg_process = None
 
 
+def consolidate_hourly_archive(prev_hour_identifier):
+    """
+    Consolidates the HLS segments from the previous hour into a single MP4 file.
+    Deletes the original HLS files after successful conversion.
+    """
+    print(f"Starting consolidation for hour: {prev_hour_identifier}")
+    hourly_playlist = os.path.join(
+        ARCHIVE_PATH, f"playlist_{prev_hour_identifier}.m3u8"
+    )
+    output_mp4 = os.path.join(ARCHIVE_PATH, f"archive_{prev_hour_identifier}.mp4")
+
+    if not os.path.exists(hourly_playlist):
+        print(
+            f"Warning: Playlist {hourly_playlist} not found for consolidation. Skipping."
+        )
+        return
+
+    command = [
+        "ffmpeg",
+        "-i",
+        hourly_playlist,
+        "-c:v",
+        "libx265",  # Use H.265 video codec
+        "-preset",
+        "medium",  # Medium speed/compression balance
+        "-crf",
+        "26",  # Constant Rate Factor for quality (23-28 is common)
+        "-c:a",
+        "copy",  # Copy audio stream without re-encoding
+        output_mp4,
+    ]
+    print(f"DEBUG: FFMPEG command being executed for MP4 consolidation: {command}")
+    try:
+        # Use a separate Popen call, don't block the main loop
+        consolidation_proc = subprocess.Popen(
+            command, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+        )
+        consolidation_processes[prev_hour_identifier] = consolidation_proc
+        print(
+            f"Consolidation process for {prev_hour_identifier} started (PID: {consolidation_proc.pid})."
+        )
+    except Exception as e:
+        print(f"Error starting consolidation for {prev_hour_identifier}: {e}")
+
+
+def check_consolidation_status():
+    """Checks the status of ongoing consolidation processes."""
+    global consolidation_processes
+    completed_identifiers = []
+    for identifier, proc in consolidation_processes.items():
+        if proc.poll() is not None:  # Process has finished
+            stdout, stderr = proc.communicate()
+            if proc.returncode == 0:
+                print(f"Consolidation for {identifier} finished successfully.")
+                # Delete HLS files for this hour
+                try:
+                    for f in os.listdir(ARCHIVE_PATH):
+                        if f.startswith(identifier) and (
+                            f.endswith(".ts") or f.endswith(".m3u8")
+                        ):
+                            file_to_delete = os.path.join(ARCHIVE_PATH, f)
+                            os.remove(file_to_delete)
+                            print(f"Deleted HLS file: {file_to_delete}")
+                except Exception as e:
+                    print(f"Error deleting HLS files for {identifier}: {e}")
+            else:
+                print(
+                    f"Consolidation for {identifier} failed with code {proc.returncode}."
+                )
+                print(f"STDOUT:\n{stdout.decode()}")
+                print(f"STDERR:\n{stderr.decode()}")
+            completed_identifiers.append(identifier)
+
+    for identifier in completed_identifiers:
+        del consolidation_processes[identifier]
+
+
 def cleanup_old_files():
-    """Deletes files older than the retention period."""
+    """Deletes archived MP4 files older than the retention period."""
     global last_cleanup_time
     if time.time() - last_cleanup_time < CLEANUP_INTERVAL_SECONDS:
         return
 
-    print("Running cleanup of old files...")
+    print("Running cleanup of old MP4 files...")
     now = datetime.utcnow()
     retention_delta = timedelta(days=RETENTION_DAYS)
     cutoff_date = now - retention_delta
 
     try:
         for filename in os.listdir(ARCHIVE_PATH):
-            if filename.endswith(".ts") or filename.endswith(".m3u8"):
+            if filename.endswith(".mp4"):  # Only target MP4s now
                 file_path = os.path.join(ARCHIVE_PATH, filename)
                 try:
                     file_mod_time = datetime.fromtimestamp(os.path.getmtime(file_path))
                     if file_mod_time < cutoff_date:
-                        print(f"Deleting old file: {filename}")
+                        print(f"Deleting old MP4 file: {filename}")
                         os.remove(file_path)
                 except OSError as e:
                     print(f"Error processing file {file_path}: {e}")
     except Exception as e:
-        print(f"An error occurred during cleanup: {e}")
+        print(f"An error occurred during MP4 cleanup: {e}")
 
     last_cleanup_time = time.time()
 
@@ -109,43 +187,67 @@ def handle_shutdown_signal(signum, frame):
     """Handle termination signals to ensure clean shutdown."""
     print(f"Received signal {signum}. Shutting down.")
     stop_ffmpeg_process()
+    # Optionally, wait for consolidation processes to finish
+    for identifier, proc in consolidation_processes.items():
+        if proc.poll() is None:
+            print(
+                f"Waiting for consolidation process {identifier} to finish (PID: {proc.pid})..."
+            )
+            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+            try:
+                proc.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                print(
+                    f"Consolidation process {identifier} did not stop gracefully, killing."
+                )
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
     exit(0)
 
 
 def main():
     """Main application loop."""
-    global ffmpeg_process
+    global ffmpeg_process, current_process_hour_identifier
 
     signal.signal(signal.SIGINT, handle_shutdown_signal)
     signal.signal(signal.SIGTERM, handle_shutdown_signal)
 
-    print("CCTV Archiver starting up.")
+    print("CCTV Archiver starting up with hourly MP4 consolidation.")
 
     while True:
-        today_str = get_current_date_str()
+        current_hour_id = get_current_hour_identifier()
 
-        # --- Daily Rollover Logic ---
-        if today_str != current_process_date:
-            print(f"Date changed. Rolling over to {today_str}.")
-            stop_ffmpeg_process()
-            start_ffmpeg_process(today_str)
+        # --- Hourly Rollover Logic ---
+        if current_hour_id != current_process_hour_identifier:
+            print(f"Hour changed. Rolling over to {current_hour_id}.")
+            if current_process_hour_identifier:  # Not the first run
+                stop_ffmpeg_process()
+                # Trigger consolidation for the hour that just finished
+                consolidate_hourly_archive(current_process_hour_identifier)
+            start_ffmpeg_process(current_hour_id)
 
-        # --- Crash Recovery Logic ---
+        # --- Crash Recovery Logic for FFMPEG HLS Capture ---
         elif ffmpeg_process is None or ffmpeg_process.poll() is not None:
-            if ffmpeg_process:  # It crashed
+            if ffmpeg_process:
                 print(
-                    f"ffmpeg process crashed with exit code {ffmpeg_process.poll()}. Restarting."
+                    f"FFMPEG HLS capture process crashed with exit code {ffmpeg_process.poll()}. Restarting."
                 )
-            else:  # Initial startup
-                print("No ffmpeg process running. Starting for the first time.")
+            else:
+                print(
+                    "No FFMPEG HLS capture process running. Starting for the first time."
+                )
 
-            stop_ffmpeg_process()  # Clean up just in case
-            start_ffmpeg_process(today_str)
+            stop_ffmpeg_process()  # Ensure it's clean before starting
+            start_ffmpeg_process(current_hour_id)
+
+        # --- Check for finished consolidation tasks ---
+        check_consolidation_status()
 
         # --- Periodic Cleanup ---
         cleanup_old_files()
 
-        time.sleep(10)  # Check every 10 seconds
+        time.sleep(
+            CONSOLIDATION_CHECK_INTERVAL_SECONDS
+        )  # Check for rollover/status every minute
 
 
 if __name__ == "__main__":

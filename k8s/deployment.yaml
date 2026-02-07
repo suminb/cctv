@@ -1,0 +1,65 @@
+
+# k8s-deployment.yaml
+
+# 1. Persistent Volume Claim
+# This requests storage from your Kubernetes cluster for the video archive.
+# Your cluster must have a StorageClass or a pre-provisioned PersistentVolume available.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: cctv-archive-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce # This volume can be mounted as read-write by a single node
+  resources:
+    requests:
+      storage: 500Gi # IMPORTANT: Adjust storage size based on your needs
+---
+# 2. Deployment
+# This defines how to run the CCTV archiver pod.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cctv-archiver
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cctv-archiver
+  template:
+    metadata:
+      labels:
+        app: cctv-archiver
+    spec:
+      # IMPORTANT: Give the pod enough time for the Python script to gracefully
+      # shut down the ffmpeg process upon pod deletion/update.
+      terminationGracePeriodSeconds: 45
+      containers:
+        - name: archiver
+          # IMPORTANT: Replace this with the actual path to your built image
+          image: zot.whiterabbit.co.kr/app/cctv:test
+          imagePullPolicy: Always
+          # --- Environment Variables ---
+          env:
+            # IMPORTANT: You MUST set the RTSP URL for your camera here.
+            - name: RTSP_URL
+              valueFrom:
+                secretKeyRef:
+                  name: cctv-rtsp-secret
+                  key: RTSP_URL
+            # This path must match the volume mount path below
+            - name: ARCHIVE_PATH
+              value: "/archive"
+            # Optional: Set the retention period for video files
+            - name: RETENTION_DAYS
+              value: "90"
+          # --- Volume Mounting ---
+          volumeMounts:
+            - name: archive-storage
+              mountPath: /archive
+      volumes:
+        - name: archive-storage
+          persistentVolumeClaim:
+            claimName: cctv-archive-pvc
+      imagePullSecrets:
+        - name: zot-registry-secret

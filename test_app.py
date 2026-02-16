@@ -142,7 +142,7 @@ class TestCCTVArchiver(unittest.TestCase):
     def test_cleanup_old_files(self, mock_datetime, mock_remove, mock_getmtime, mock_listdir):
         # Mock current time to Feb 7, 2026, 10:00:00
         mock_datetime.utcnow.return_value = datetime(2026, 2, 7, 10, 0, 0)
-        # Use the original datetime.fromtimestamp to avoid infinite recursion
+        # Use the original (unmocked) datetime.fromtimestamp to avoid infinite recursion
         mock_datetime.fromtimestamp.side_effect = lambda ts: _original_datetime.fromtimestamp(ts)
         
         # Mock file modification times

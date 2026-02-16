@@ -88,7 +88,7 @@ This command will:
 - Identify HLS files (.ts and .m3u8) that don't have corresponding MP4 archives
 - Delete the orphaned files and report how much space was freed
 
-**Note**: The purge command only deletes HLS files that are truly orphaned (no corresponding MP4). HLS files for hours that have been successfully consolidated into MP4 files will not be affected.
+**Note**: The purge command only deletes HLS files that are truly orphaned (those WITHOUT corresponding MP4 archives). HLS files that have corresponding MP4 archives are not considered orphaned and will not be deleted.
 
 ## Testing
 

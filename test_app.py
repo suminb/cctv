@@ -92,10 +92,7 @@ class TestCCTVArchiver(unittest.TestCase):
             "ffmpeg",
             "-y",
             "-i", "/test_archive/playlist_2026-02-07-09.m3u8",
-            "-c:v", "libx265",
-            "-preset", "medium",
-            "-crf", "26",
-            "-c:a", "copy",
+            "-c", "copy",
             "/test_archive/archive_2026-02-07-09.mp4",
         ]
         self.assertEqual(mock_popen.call_args[0][0], expected_command)

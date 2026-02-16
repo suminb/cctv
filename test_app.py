@@ -135,6 +135,11 @@ class TestCCTVArchiver(unittest.TestCase):
         "archive_2026-02-07-09.mp4",
         "archive_2026-02-06-09.mp4", # Old file
         "archive_2025-11-01-09.mp4", # Very old file
+        "2026-02-07-09_segment_00001.ts", # Recent TS file
+        "2025-11-01-09_segment_00001.ts", # Old TS file
+        "playlist_2026-02-07-09.m3u8", # Recent playlist
+        "playlist_2025-11-01-09.m3u8", # Old playlist
+        "other_file.txt", # Should not be deleted
     ])
     @patch('app.os.path.getmtime')
     @patch('app.os.remove')
@@ -146,11 +151,14 @@ class TestCCTVArchiver(unittest.TestCase):
         mock_datetime.fromtimestamp.side_effect = lambda ts: _original_datetime.fromtimestamp(ts)
         
         # Mock file modification times
-        # 2026-02-07-09.mp4 is recent (within 90 days)
         mock_getmtime.side_effect = [
-            datetime(2026, 2, 7, 9, 0, 0).timestamp(),   # 2026-02-07-09.mp4
-            datetime(2026, 2, 6, 9, 0, 0).timestamp(),   # 2026-02-06-09.mp4
-            datetime(2025, 11, 1, 9, 0, 0).timestamp(),  # 2025-11-01-09.mp4 (older than 90 days)
+            datetime(2026, 2, 7, 9, 0, 0).timestamp(),   # 2026-02-07-09.mp4 (recent)
+            datetime(2026, 2, 6, 9, 0, 0).timestamp(),   # 2026-02-06-09.mp4 (recent)
+            datetime(2025, 11, 1, 9, 0, 0).timestamp(),  # 2025-11-01-09.mp4 (old, should be deleted)
+            datetime(2026, 2, 7, 9, 0, 0).timestamp(),   # 2026-02-07-09_segment_00001.ts (recent)
+            datetime(2025, 11, 1, 9, 0, 0).timestamp(),  # 2025-11-01-09_segment_00001.ts (old, should be deleted)
+            datetime(2026, 2, 7, 9, 0, 0).timestamp(),   # playlist_2026-02-07-09.m3u8 (recent)
+            datetime(2025, 11, 1, 9, 0, 0).timestamp(),  # playlist_2025-11-01-09.m3u8 (old, should be deleted)
         ]
         
         app.ARCHIVE_PATH = "/test_archive"
@@ -159,8 +167,19 @@ class TestCCTVArchiver(unittest.TestCase):
 
         app.cleanup_old_files()
 
-        # Only the very old file should be removed
-        mock_remove.assert_called_once_with("/test_archive/archive_2025-11-01-09.mp4")
+        # Old files should be removed (MP4, TS, and M3U8)
+        calls = mock_remove.call_args_list
+        self.assertIn(unittest.mock.call("/test_archive/archive_2025-11-01-09.mp4"), calls)
+        self.assertIn(unittest.mock.call("/test_archive/2025-11-01-09_segment_00001.ts"), calls)
+        self.assertIn(unittest.mock.call("/test_archive/playlist_2025-11-01-09.m3u8"), calls)
+        # Recent files should not be removed
+        self.assertNotIn(unittest.mock.call("/test_archive/archive_2026-02-07-09.mp4"), calls)
+        self.assertNotIn(unittest.mock.call("/test_archive/2026-02-07-09_segment_00001.ts"), calls)
+        self.assertNotIn(unittest.mock.call("/test_archive/playlist_2026-02-07-09.m3u8"), calls)
+        # Non-archive files should not be removed
+        self.assertNotIn(unittest.mock.call("/test_archive/other_file.txt"), calls)
+        # Should delete exactly 3 old files
+        self.assertEqual(mock_remove.call_count, 3)
 
 if __name__ == '__main__':
     unittest.main()

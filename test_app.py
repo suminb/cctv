@@ -2,6 +2,8 @@ import unittest
 from unittest.mock import patch, MagicMock
 import os
 import time
+import signal
+import subprocess
 from datetime import datetime, timedelta
 
 # Import the functions from app.py
@@ -85,6 +87,7 @@ class TestCCTVArchiver(unittest.TestCase):
         mock_popen.assert_called_once()
         expected_command = [
             "ffmpeg",
+            "-y",
             "-i", "/test_archive/playlist_2026-02-07-09.m3u8",
             "-c:v", "libx265",
             "-preset", "medium",
@@ -106,6 +109,7 @@ class TestCCTVArchiver(unittest.TestCase):
     def test_check_consolidation_status_success(self, mock_remove, mock_listdir):
         mock_proc = MagicMock()
         mock_proc.poll.return_value = 0 # Process finished successfully
+        mock_proc.returncode = 0 # Set the returncode attribute
         mock_proc.communicate.return_value = (b'stdout', b'stderr')
         app.consolidation_processes = {"2026-02-07-09": mock_proc}
         app.ARCHIVE_PATH = "/test_archive"
@@ -135,6 +139,7 @@ class TestCCTVArchiver(unittest.TestCase):
     def test_cleanup_old_files(self, mock_datetime, mock_remove, mock_getmtime, mock_listdir):
         # Mock current time to Feb 7, 2026, 10:00:00
         mock_datetime.utcnow.return_value = datetime(2026, 2, 7, 10, 0, 0)
+        mock_datetime.fromtimestamp.side_effect = lambda ts: datetime.fromtimestamp(ts)
         
         # Mock file modification times
         # 2026-02-07-09.mp4 is recent (within 90 days)

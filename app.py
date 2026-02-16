@@ -97,6 +97,7 @@ def consolidate_hourly_archive(prev_hour_identifier):
 
     command = [
         "ffmpeg",
+        "-y",  # Automatically overwrite output files without prompting
         "-i",
         hourly_playlist,
         "-c:v",

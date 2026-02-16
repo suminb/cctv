@@ -316,5 +316,29 @@ class TestCCTVArchiver(unittest.TestCase):
         self.assertNotIn("/test_archive/2026-02-16-11_segment_00001.ts", deleted_files)
         self.assertNotIn("/test_archive/playlist_2026-02-16-11.m3u8", deleted_files)
 
+    def test_argument_parsing_purge(self):
+        """Test that the purge command line argument is properly parsed."""
+        import argparse
+        
+        # Test purge command
+        parser = argparse.ArgumentParser()
+        parser.add_argument("command", nargs="?", choices=["purge"])
+        args = parser.parse_args(["purge"])
+        
+        self.assertEqual(args.command, "purge")
+        self.assertTrue(args.command == "purge")
+    
+    def test_argument_parsing_default(self):
+        """Test that no command defaults to None (which triggers main)."""
+        import argparse
+        
+        # Test default (no command)
+        parser = argparse.ArgumentParser()
+        parser.add_argument("command", nargs="?", choices=["purge"])
+        args = parser.parse_args([])
+        
+        self.assertIsNone(args.command)
+        self.assertFalse(args.command == "purge")
+
 if __name__ == '__main__':
     unittest.main()

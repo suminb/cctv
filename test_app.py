@@ -133,12 +133,12 @@ class TestCCTVArchiver(unittest.TestCase):
 
     @patch('app.os.listdir', return_value=[
         "archive_2026-02-07-09.mp4",
-        "archive_2026-02-06-09.mp4", # Old file
-        "archive_2025-11-01-09.mp4", # Very old file
-        "2026-02-07-09_segment_00001.ts", # Recent TS file
-        "2025-11-01-09_segment_00001.ts", # Old TS file
-        "playlist_2026-02-07-09.m3u8", # Recent playlist
-        "playlist_2025-11-01-09.m3u8", # Old playlist
+        "archive_2026-02-06-09.mp4", # Recent file
+        "archive_2025-11-01-09.mp4", # Very old file (should be deleted)
+        "2026-02-07-09_segment_00001.ts", # Recent TS file (not subject to retention)
+        "2025-11-01-09_segment_00001.ts", # Old TS file (not subject to retention)
+        "playlist_2026-02-07-09.m3u8", # Recent playlist (not subject to retention)
+        "playlist_2025-11-01-09.m3u8", # Old playlist (not subject to retention)
         "other_file.txt", # Should not be deleted
     ])
     @patch('app.os.path.getmtime')
@@ -150,15 +150,11 @@ class TestCCTVArchiver(unittest.TestCase):
         # Use the original (unmocked) datetime.fromtimestamp to avoid infinite recursion
         mock_datetime.fromtimestamp.side_effect = lambda ts: _original_datetime.fromtimestamp(ts)
         
-        # Mock file modification times
+        # Mock file modification times - only .mp4 files will be checked
         mock_getmtime.side_effect = [
             datetime(2026, 2, 7, 9, 0, 0).timestamp(),   # 2026-02-07-09.mp4 (recent)
             datetime(2026, 2, 6, 9, 0, 0).timestamp(),   # 2026-02-06-09.mp4 (recent)
             datetime(2025, 11, 1, 9, 0, 0).timestamp(),  # 2025-11-01-09.mp4 (old, should be deleted)
-            datetime(2026, 2, 7, 9, 0, 0).timestamp(),   # 2026-02-07-09_segment_00001.ts (recent)
-            datetime(2025, 11, 1, 9, 0, 0).timestamp(),  # 2025-11-01-09_segment_00001.ts (old, should be deleted)
-            datetime(2026, 2, 7, 9, 0, 0).timestamp(),   # playlist_2026-02-07-09.m3u8 (recent)
-            datetime(2025, 11, 1, 9, 0, 0).timestamp(),  # playlist_2025-11-01-09.m3u8 (old, should be deleted)
         ]
         
         app.ARCHIVE_PATH = "/test_archive"
@@ -167,19 +163,20 @@ class TestCCTVArchiver(unittest.TestCase):
 
         app.cleanup_old_files()
 
-        # Old files should be removed (MP4, TS, and M3U8)
+        # Only old MP4 files should be removed by retention policy
+        # TS and M3U8 files are deleted after consolidation, not by retention policy
         calls = mock_remove.call_args_list
         self.assertIn(unittest.mock.call("/test_archive/archive_2025-11-01-09.mp4"), calls)
-        self.assertIn(unittest.mock.call("/test_archive/2025-11-01-09_segment_00001.ts"), calls)
-        self.assertIn(unittest.mock.call("/test_archive/playlist_2025-11-01-09.m3u8"), calls)
-        # Recent files should not be removed
+        # TS and M3U8 files should NOT be removed by cleanup_old_files
+        self.assertNotIn(unittest.mock.call("/test_archive/2025-11-01-09_segment_00001.ts"), calls)
+        self.assertNotIn(unittest.mock.call("/test_archive/playlist_2025-11-01-09.m3u8"), calls)
+        # Recent MP4 files should not be removed
         self.assertNotIn(unittest.mock.call("/test_archive/archive_2026-02-07-09.mp4"), calls)
-        self.assertNotIn(unittest.mock.call("/test_archive/2026-02-07-09_segment_00001.ts"), calls)
-        self.assertNotIn(unittest.mock.call("/test_archive/playlist_2026-02-07-09.m3u8"), calls)
+        self.assertNotIn(unittest.mock.call("/test_archive/archive_2026-02-06-09.mp4"), calls)
         # Non-archive files should not be removed
         self.assertNotIn(unittest.mock.call("/test_archive/other_file.txt"), calls)
-        # Should delete exactly 3 old files
-        self.assertEqual(mock_remove.call_count, 3)
+        # Should delete exactly 1 old MP4 file
+        self.assertEqual(mock_remove.call_count, 1)
 
 if __name__ == '__main__':
     unittest.main()

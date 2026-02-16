@@ -155,30 +155,33 @@ def check_consolidation_status():
 
 
 def cleanup_old_files():
-    """Deletes archived files (MP4, TS, M3U8) older than the retention period."""
+    """Deletes archived MP4 files older than the retention period.
+    
+    Note: .ts segment files and .m3u8 playlists are deleted immediately after
+    successful consolidation (see check_consolidation_status), not by retention policy.
+    """
     global last_cleanup_time
     if time.time() - last_cleanup_time < CLEANUP_INTERVAL_SECONDS:
         return
 
-    print("Running cleanup of old files...")
+    print("Running cleanup of old MP4 files...")
     now = datetime.utcnow()
     retention_delta = timedelta(days=RETENTION_DAYS)
     cutoff_date = now - retention_delta
 
     try:
         for filename in os.listdir(ARCHIVE_PATH):
-            # Target MP4 archived files, TS segments, and M3U8 playlists
-            if filename.endswith(".mp4") or filename.endswith(".ts") or filename.endswith(".m3u8"):
+            if filename.endswith(".mp4"):  # Only target MP4 archived files
                 file_path = os.path.join(ARCHIVE_PATH, filename)
                 try:
                     file_mod_time = datetime.fromtimestamp(os.path.getmtime(file_path))
                     if file_mod_time < cutoff_date:
-                        print(f"Deleting old file: {filename}")
+                        print(f"Deleting old MP4 file: {filename}")
                         os.remove(file_path)
                 except OSError as e:
                     print(f"Error processing file {file_path}: {e}")
     except Exception as e:
-        print(f"An error occurred during cleanup: {e}")
+        print(f"An error occurred during MP4 cleanup: {e}")
 
     last_cleanup_time = time.time()
 

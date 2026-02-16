@@ -192,8 +192,10 @@ def purge_orphaned_files():
     """Manually delete .ts segment files and .m3u8 playlists that should have been auto-deleted.
     
     When consolidation succeeds, it creates an MP4 and should automatically delete the source
-    HLS files (.ts segments and .m3u8 playlist). If that automatic deletion fails, these files
-    remain in the archive directory alongside their MP4.
+    HLS files (.ts segments and .m3u8 playlist). This automatic deletion happens in the
+    check_consolidation_status() function. However, if that automatic deletion fails due to
+    errors (file permissions, race conditions, etc.), these files remain in the archive
+    directory alongside their MP4.
     
     This command identifies and deletes HLS files that have corresponding MP4 files, as these
     should have been deleted already but weren't (likely due to errors in the cleanup process).

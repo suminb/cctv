@@ -2,6 +2,7 @@ import os
 import subprocess
 import time
 import signal
+import argparse
 from datetime import datetime, timedelta
 
 # --- Configuration ---
@@ -186,6 +187,91 @@ def cleanup_old_files():
     last_cleanup_time = time.time()
 
 
+def purge_orphaned_files():
+    """Manually delete orphaned .ts segment files and .m3u8 playlists.
+    
+    Orphaned files are HLS segments and playlists that don't have a corresponding
+    MP4 file. This happens when consolidation fails or never completes.
+    
+    Returns:
+        tuple: (deleted_count, total_size_bytes) Number of files deleted and total size freed
+    """
+    if not os.path.exists(ARCHIVE_PATH):
+        print(f"Archive path {ARCHIVE_PATH} does not exist.")
+        return 0, 0
+    
+    print(f"Scanning {ARCHIVE_PATH} for orphaned HLS files...")
+    
+    # First, find all MP4 files and extract their hour identifiers
+    mp4_identifiers = set()
+    try:
+        for filename in os.listdir(ARCHIVE_PATH):
+            if filename.endswith(".mp4") and filename.startswith("archive_"):
+                # Extract YYYY-MM-DD-HH from archive_YYYY-MM-DD-HH.mp4
+                identifier = filename[8:-4]  # Remove "archive_" prefix and ".mp4" suffix
+                mp4_identifiers.add(identifier)
+    except Exception as e:
+        print(f"Error scanning for MP4 files: {e}")
+        return 0, 0
+    
+    print(f"Found {len(mp4_identifiers)} MP4 archive(s)")
+    
+    # Now find orphaned .ts and .m3u8 files
+    orphaned_files = []
+    total_size = 0
+    
+    try:
+        for filename in os.listdir(ARCHIVE_PATH):
+            is_orphaned = False
+            identifier = None
+            
+            # Check if it's a segment file
+            if filename.endswith(".ts") and "_segment_" in filename:
+                # Extract YYYY-MM-DD-HH from YYYY-MM-DD-HH_segment_XXXXX.ts
+                identifier = filename.split("_segment_")[0]
+                is_orphaned = identifier not in mp4_identifiers
+            
+            # Check if it's a playlist file
+            elif filename.endswith(".m3u8") and filename.startswith("playlist_"):
+                # Extract YYYY-MM-DD-HH from playlist_YYYY-MM-DD-HH.m3u8
+                identifier = filename[9:-5]  # Remove "playlist_" prefix and ".m3u8" suffix
+                is_orphaned = identifier not in mp4_identifiers
+            
+            if is_orphaned:
+                file_path = os.path.join(ARCHIVE_PATH, filename)
+                try:
+                    file_size = os.path.getsize(file_path)
+                    orphaned_files.append((file_path, filename, file_size))
+                    total_size += file_size
+                except OSError as e:
+                    print(f"Error getting size of {file_path}: {e}")
+    except Exception as e:
+        print(f"Error scanning for orphaned files: {e}")
+        return 0, 0
+    
+    if not orphaned_files:
+        print("No orphaned files found.")
+        return 0, 0
+    
+    print(f"\nFound {len(orphaned_files)} orphaned file(s) ({total_size / (1024*1024):.2f} MB)")
+    
+    # Delete orphaned files
+    deleted_count = 0
+    deleted_size = 0
+    
+    for file_path, filename, file_size in orphaned_files:
+        try:
+            os.remove(file_path)
+            print(f"Deleted: {filename} ({file_size / (1024*1024):.2f} MB)")
+            deleted_count += 1
+            deleted_size += file_size
+        except OSError as e:
+            print(f"Error deleting {file_path}: {e}")
+    
+    print(f"\nPurge complete: Deleted {deleted_count} file(s), freed {deleted_size / (1024*1024):.2f} MB")
+    return deleted_count, deleted_size
+
+
 def handle_shutdown_signal(signum, frame):
     """Handle termination signals to ensure clean shutdown."""
     print(f"Received signal {signum}. Shutting down.")
@@ -254,4 +340,37 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(
+        description="CCTV Archiver - Archive RTSP streams to MP4 files",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Commands:
+  (none)    Start the archiver in continuous recording mode (default)
+  purge     Delete orphaned HLS files (.ts and .m3u8) that don't have corresponding MP4 archives
+
+Environment Variables:
+  RTSP_URL         RTSP stream URL to capture (required for recording mode)
+  ARCHIVE_PATH     Directory for archived files (default: /archive)
+  RETENTION_DAYS   Number of days to keep archived files (default: 90)
+
+Examples:
+  # Start continuous recording
+  python3 app.py
+  
+  # Purge orphaned files
+  python3 app.py purge
+        """
+    )
+    parser.add_argument(
+        "command",
+        nargs="?",
+        choices=["purge"],
+        help="Command to execute (omit for normal recording mode)"
+    )
+    
+    args = parser.parse_args()
+    
+    if args.command == "purge":
+        purge_orphaned_files()
+    else:
+        main()

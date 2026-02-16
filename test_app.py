@@ -178,5 +178,79 @@ class TestCCTVArchiver(unittest.TestCase):
         # Should delete exactly 1 old MP4 file
         self.assertEqual(mock_remove.call_count, 1)
 
+    @patch('app.os.path.exists', return_value=True)
+    @patch('app.os.listdir')
+    @patch('app.os.path.getsize')
+    @patch('app.os.remove')
+    def test_purge_orphaned_files_with_orphans(self, mock_remove, mock_getsize, mock_listdir, mock_exists):
+        """Test purge identifies and deletes orphaned files."""
+        # Setup: We have MP4 for hour 10, but orphaned files for hours 08 and 09
+        mock_listdir.return_value = [
+            "archive_2026-02-07-10.mp4",  # Has MP4
+            "2026-02-07-10_segment_00001.ts",  # Has MP4 - not orphaned
+            "2026-02-07-10_segment_00002.ts",  # Has MP4 - not orphaned
+            "playlist_2026-02-07-10.m3u8",  # Has MP4 - not orphaned
+            "2026-02-07-09_segment_00001.ts",  # No MP4 - orphaned
+            "2026-02-07-09_segment_00002.ts",  # No MP4 - orphaned
+            "playlist_2026-02-07-09.m3u8",  # No MP4 - orphaned
+            "2026-02-07-08_segment_00001.ts",  # No MP4 - orphaned
+            "playlist_2026-02-07-08.m3u8",  # No MP4 - orphaned
+            "other_file.txt",  # Not an HLS file
+        ]
+        
+        # Mock file sizes (1 MB each for simplicity)
+        mock_getsize.return_value = 1024 * 1024
+        
+        app.ARCHIVE_PATH = "/test_archive"
+        
+        deleted_count, deleted_size = app.purge_orphaned_files()
+        
+        # Should delete 5 orphaned files (2 ts + 1 m3u8 from hour 09, 1 ts + 1 m3u8 from hour 08)
+        self.assertEqual(deleted_count, 5)
+        self.assertEqual(deleted_size, 5 * 1024 * 1024)
+        
+        # Verify correct files were deleted
+        deleted_files = [call[0][0] for call in mock_remove.call_args_list]
+        self.assertIn("/test_archive/2026-02-07-09_segment_00001.ts", deleted_files)
+        self.assertIn("/test_archive/2026-02-07-09_segment_00002.ts", deleted_files)
+        self.assertIn("/test_archive/playlist_2026-02-07-09.m3u8", deleted_files)
+        self.assertIn("/test_archive/2026-02-07-08_segment_00001.ts", deleted_files)
+        self.assertIn("/test_archive/playlist_2026-02-07-08.m3u8", deleted_files)
+        
+        # Verify non-orphaned files were NOT deleted
+        self.assertNotIn("/test_archive/2026-02-07-10_segment_00001.ts", deleted_files)
+        self.assertNotIn("/test_archive/2026-02-07-10_segment_00002.ts", deleted_files)
+        self.assertNotIn("/test_archive/playlist_2026-02-07-10.m3u8", deleted_files)
+        self.assertNotIn("/test_archive/archive_2026-02-07-10.mp4", deleted_files)
+        self.assertNotIn("/test_archive/other_file.txt", deleted_files)
+
+    @patch('app.os.path.exists', return_value=True)
+    @patch('app.os.listdir')
+    def test_purge_orphaned_files_no_orphans(self, mock_listdir, mock_exists):
+        """Test purge when there are no orphaned files."""
+        # All HLS files have corresponding MP4s
+        mock_listdir.return_value = [
+            "archive_2026-02-07-10.mp4",
+            "2026-02-07-10_segment_00001.ts",
+            "playlist_2026-02-07-10.m3u8",
+        ]
+        
+        app.ARCHIVE_PATH = "/test_archive"
+        
+        deleted_count, deleted_size = app.purge_orphaned_files()
+        
+        self.assertEqual(deleted_count, 0)
+        self.assertEqual(deleted_size, 0)
+
+    @patch('app.os.path.exists', return_value=False)
+    def test_purge_orphaned_files_no_archive_path(self, mock_exists):
+        """Test purge when archive path doesn't exist."""
+        app.ARCHIVE_PATH = "/nonexistent"
+        
+        deleted_count, deleted_size = app.purge_orphaned_files()
+        
+        self.assertEqual(deleted_count, 0)
+        self.assertEqual(deleted_size, 0)
+
 if __name__ == '__main__':
     unittest.main()

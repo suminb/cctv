@@ -72,6 +72,24 @@ export RETENTION_DAYS=90
 python3 app.py
 ```
 
+## Maintenance Commands
+
+### Purge Orphaned Files
+
+Over time, orphaned HLS files (.ts segments and .m3u8 playlists) may accumulate if consolidation processes fail or are interrupted. These orphaned files don't have corresponding MP4 archives. You can manually clean them up using the `purge` command:
+
+```bash
+export ARCHIVE_PATH="/path/to/archive"
+python3 app.py purge
+```
+
+This command will:
+- Scan the archive directory for all MP4 files
+- Identify HLS files (.ts and .m3u8) that don't have corresponding MP4 archives
+- Delete the orphaned files and report how much space was freed
+
+**Note**: The purge command only deletes HLS files that are truly orphaned (no corresponding MP4). HLS files for hours that have been successfully consolidated into MP4 files will not be affected.
+
 ## Testing
 
 Run the unit tests:

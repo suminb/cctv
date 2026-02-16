@@ -10,6 +10,9 @@ from datetime import datetime, timedelta
 # For testing purposes, we'll import app as a module
 import app
 
+# Save original datetime for use in mocking
+_original_datetime = datetime
+
 class TestCCTVArchiver(unittest.TestCase):
 
     @patch('app.datetime')
@@ -139,7 +142,8 @@ class TestCCTVArchiver(unittest.TestCase):
     def test_cleanup_old_files(self, mock_datetime, mock_remove, mock_getmtime, mock_listdir):
         # Mock current time to Feb 7, 2026, 10:00:00
         mock_datetime.utcnow.return_value = datetime(2026, 2, 7, 10, 0, 0)
-        mock_datetime.fromtimestamp.side_effect = lambda ts: datetime.fromtimestamp(ts)
+        # Use the original datetime.fromtimestamp to avoid circular reference
+        mock_datetime.fromtimestamp.side_effect = lambda ts: _original_datetime.fromtimestamp(ts)
         
         # Mock file modification times
         # 2026-02-07-09.mp4 is recent (within 90 days)

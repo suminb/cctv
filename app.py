@@ -81,6 +81,7 @@ def stop_ffmpeg_process():
 def consolidate_hourly_archive(prev_hour_identifier):
     """
     Consolidates the HLS segments from the previous hour into a single MP4 file.
+    Uses stream copy to avoid re-encoding, which saves CPU and memory.
     Deletes the original HLS files after successful conversion.
     """
     print(f"Starting consolidation for hour: {prev_hour_identifier}")
@@ -100,14 +101,8 @@ def consolidate_hourly_archive(prev_hour_identifier):
         "-y",  # Automatically overwrite output files without prompting
         "-i",
         hourly_playlist,
-        "-c:v",
-        "libx265",  # Use H.265 video codec
-        "-preset",
-        "medium",  # Medium speed/compression balance
-        "-crf",
-        "26",  # Constant Rate Factor for quality (23-28 is common)
-        "-c:a",
-        "copy",  # Copy audio stream without re-encoding
+        "-c",
+        "copy",  # Copy both video and audio streams without re-encoding
         output_mp4,
     ]
     print(f"DEBUG: FFMPEG command being executed for MP4 consolidation: {command}")

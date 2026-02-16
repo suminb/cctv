@@ -12,6 +12,7 @@ RETENTION_DAYS = int(os.environ.get("RETENTION_DAYS", 90))
 SEGMENT_TIME_SECONDS = 10
 CONSOLIDATION_CHECK_INTERVAL_SECONDS = 60  # Check every minute for hourly rollover
 CLEANUP_INTERVAL_SECONDS = 3600  # 1 hour
+BYTES_PER_MB = 1024 * 1024  # For file size conversions
 
 ffmpeg_process = None
 current_process_hour_identifier = None  # YYYY-MM-DD-HH
@@ -244,7 +245,9 @@ def purge_orphaned_files():
                     orphaned_files.append((file_path, filename, file_size))
                     total_size += file_size
                 except OSError as e:
-                    print(f"Error getting size of {file_path}: {e}")
+                    # Skip files we can't access (permissions, etc.)
+                    # They will not be included in the deletion list
+                    print(f"Warning: Cannot access {file_path}: {e}")
     except Exception as e:
         print(f"Error scanning for orphaned files: {e}")
         return 0, 0
@@ -253,7 +256,7 @@ def purge_orphaned_files():
         print("No orphaned files found.")
         return 0, 0
     
-    print(f"\nFound {len(orphaned_files)} orphaned file(s) ({total_size / (1024*1024):.2f} MB)")
+    print(f"\nFound {len(orphaned_files)} orphaned file(s) ({total_size / BYTES_PER_MB:.2f} MB)")
     
     # Delete orphaned files
     deleted_count = 0
@@ -262,13 +265,13 @@ def purge_orphaned_files():
     for file_path, filename, file_size in orphaned_files:
         try:
             os.remove(file_path)
-            print(f"Deleted: {filename} ({file_size / (1024*1024):.2f} MB)")
+            print(f"Deleted: {filename} ({file_size / BYTES_PER_MB:.2f} MB)")
             deleted_count += 1
             deleted_size += file_size
         except OSError as e:
             print(f"Error deleting {file_path}: {e}")
     
-    print(f"\nPurge complete: Deleted {deleted_count} file(s), freed {deleted_size / (1024*1024):.2f} MB")
+    print(f"\nPurge complete: Deleted {deleted_count} file(s), freed {deleted_size / BYTES_PER_MB:.2f} MB")
     return deleted_count, deleted_size
 
 

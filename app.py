@@ -194,6 +194,9 @@ def purge_orphaned_files():
     Orphaned files are HLS segments and playlists that don't have a corresponding
     MP4 file. This happens when consolidation fails or never completes.
     
+    Files from recent hours (current + previous 2 hours) are excluded to avoid
+    deleting actively recording files that haven't been consolidated yet.
+    
     Returns:
         tuple: (deleted_count, total_size_bytes) Number of files deleted and total size freed
     """
@@ -202,6 +205,17 @@ def purge_orphaned_files():
         return 0, 0
     
     print(f"Scanning {ARCHIVE_PATH} for orphaned HLS files...")
+    
+    # Calculate recent hour identifiers to exclude (current + previous 2 hours)
+    # These files are likely still being recorded or waiting for consolidation
+    recent_hours = set()
+    now = datetime.utcnow()
+    for hours_ago in range(3):  # Current hour, 1 hour ago, 2 hours ago
+        recent_time = now - timedelta(hours=hours_ago)
+        recent_identifier = recent_time.strftime("%Y-%m-%d-%H")
+        recent_hours.add(recent_identifier)
+    
+    print(f"Excluding recent hours from purge: {sorted(recent_hours)}")
     
     # First, find all MP4 files and extract their hour identifiers
     mp4_identifiers = set()
@@ -230,13 +244,15 @@ def purge_orphaned_files():
             if filename.endswith(".ts") and "_segment_" in filename:
                 # Extract YYYY-MM-DD-HH from YYYY-MM-DD-HH_segment_XXXXX.ts
                 identifier = filename.split("_segment_")[0]
-                is_orphaned = identifier not in mp4_identifiers
+                # File is orphaned if it has no MP4 AND is not from a recent hour
+                is_orphaned = (identifier not in mp4_identifiers) and (identifier not in recent_hours)
             
             # Check if it's a playlist file
             elif filename.endswith(".m3u8") and filename.startswith("playlist_"):
                 # Extract YYYY-MM-DD-HH from playlist_YYYY-MM-DD-HH.m3u8
                 identifier = filename[9:-5]  # Remove "playlist_" prefix and ".m3u8" suffix
-                is_orphaned = identifier not in mp4_identifiers
+                # File is orphaned if it has no MP4 AND is not from a recent hour
+                is_orphaned = (identifier not in mp4_identifiers) and (identifier not in recent_hours)
             
             if is_orphaned:
                 file_path = os.path.join(ARCHIVE_PATH, filename)

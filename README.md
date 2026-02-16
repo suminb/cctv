@@ -86,9 +86,10 @@ python3 app.py purge
 This command will:
 - Scan the archive directory for all MP4 files
 - Identify HLS files (.ts and .m3u8) that don't have corresponding MP4 archives
+- **Exclude files from the current hour and previous 2 hours** (these are actively being recorded or awaiting consolidation)
 - Delete the orphaned files and report how much space was freed
 
-**Note**: The purge command only deletes HLS files that are truly orphaned (those WITHOUT corresponding MP4 archives). HLS files that have corresponding MP4 archives are not considered orphaned and will not be deleted.
+**Note**: The purge command only deletes HLS files that are truly orphaned (those WITHOUT corresponding MP4 archives AND older than 3 hours). Files from recent hours are protected even if they don't have MP4s yet, as they may still be actively recording or in the consolidation queue.
 
 ## Testing
 

@@ -189,13 +189,17 @@ def cleanup_old_files():
 
 
 def purge_orphaned_files():
-    """Manually delete orphaned .ts segment files and .m3u8 playlists.
+    """Manually delete .ts segment files and .m3u8 playlists that should have been auto-deleted.
     
-    Orphaned files are HLS segments and playlists that don't have a corresponding
-    MP4 file. This happens when consolidation fails or never completes.
+    When consolidation succeeds, it creates an MP4 and should automatically delete the source
+    HLS files (.ts segments and .m3u8 playlist). If that automatic deletion fails, these files
+    remain in the archive directory alongside their MP4.
     
-    Files from recent hours (current + previous 2 hours) are excluded to avoid
-    deleting actively recording files that haven't been consolidated yet.
+    This command identifies and deletes HLS files that have corresponding MP4 files, as these
+    should have been deleted already but weren't (likely due to errors in the cleanup process).
+    
+    Files from recent hours (current + previous 2 hours) are excluded to avoid deleting files
+    that are still being recorded or in the consolidation queue.
     
     Returns:
         tuple: (deleted_count, total_size_bytes) Number of files deleted and total size freed
@@ -204,7 +208,7 @@ def purge_orphaned_files():
         print(f"Archive path {ARCHIVE_PATH} does not exist.")
         return 0, 0
     
-    print(f"Scanning {ARCHIVE_PATH} for orphaned HLS files...")
+    print(f"Scanning {ARCHIVE_PATH} for HLS files that should have been deleted...")
     
     # Calculate recent hour identifiers to exclude (current + previous 2 hours)
     # These files are likely still being recorded or waiting for consolidation
@@ -231,54 +235,54 @@ def purge_orphaned_files():
     
     print(f"Found {len(mp4_identifiers)} MP4 archive(s)")
     
-    # Now find orphaned .ts and .m3u8 files
-    orphaned_files = []
+    # Now find HLS files that should have been deleted (have corresponding MP4s)
+    files_to_delete = []
     total_size = 0
     
     try:
         for filename in os.listdir(ARCHIVE_PATH):
-            is_orphaned = False
+            should_delete = False
             identifier = None
             
             # Check if it's a segment file
             if filename.endswith(".ts") and "_segment_" in filename:
                 # Extract YYYY-MM-DD-HH from YYYY-MM-DD-HH_segment_XXXXX.ts
                 identifier = filename.split("_segment_")[0]
-                # File is orphaned if it has no MP4 AND is not from a recent hour
-                is_orphaned = (identifier not in mp4_identifiers) and (identifier not in recent_hours)
+                # File should be deleted if it HAS an MP4 AND is not from a recent hour
+                should_delete = (identifier in mp4_identifiers) and (identifier not in recent_hours)
             
             # Check if it's a playlist file
             elif filename.endswith(".m3u8") and filename.startswith("playlist_"):
                 # Extract YYYY-MM-DD-HH from playlist_YYYY-MM-DD-HH.m3u8
                 identifier = filename[9:-5]  # Remove "playlist_" prefix and ".m3u8" suffix
-                # File is orphaned if it has no MP4 AND is not from a recent hour
-                is_orphaned = (identifier not in mp4_identifiers) and (identifier not in recent_hours)
+                # File should be deleted if it HAS an MP4 AND is not from a recent hour
+                should_delete = (identifier in mp4_identifiers) and (identifier not in recent_hours)
             
-            if is_orphaned:
+            if should_delete:
                 file_path = os.path.join(ARCHIVE_PATH, filename)
                 try:
                     file_size = os.path.getsize(file_path)
-                    orphaned_files.append((file_path, filename, file_size))
+                    files_to_delete.append((file_path, filename, file_size))
                     total_size += file_size
                 except OSError as e:
                     # Skip files we can't access (permissions, etc.)
                     # They will not be included in the deletion list
                     print(f"Warning: Cannot access {file_path}: {e}")
     except Exception as e:
-        print(f"Error scanning for orphaned files: {e}")
+        print(f"Error scanning for files to delete: {e}")
         return 0, 0
     
-    if not orphaned_files:
-        print("No orphaned files found.")
+    if not files_to_delete:
+        print("No HLS files found that need to be deleted.")
         return 0, 0
     
-    print(f"\nFound {len(orphaned_files)} orphaned file(s) ({total_size / BYTES_PER_MB:.2f} MB)")
+    print(f"\nFound {len(files_to_delete)} HLS file(s) to delete ({total_size / BYTES_PER_MB:.2f} MB)")
     
-    # Delete orphaned files
+    # Delete the files
     deleted_count = 0
     deleted_size = 0
     
-    for file_path, filename, file_size in orphaned_files:
+    for file_path, filename, file_size in files_to_delete:
         try:
             os.remove(file_path)
             print(f"Deleted: {filename} ({file_size / BYTES_PER_MB:.2f} MB)")

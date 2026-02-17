@@ -72,6 +72,30 @@ export RETENTION_DAYS=90
 python3 app.py
 ```
 
+## Maintenance Commands
+
+### Purge Leftover HLS Files
+
+When an MP4 archive is successfully created from HLS segments, the source .ts and .m3u8 files are automatically deleted. However, if this automatic cleanup fails (e.g., due to file permissions or other errors), these files may remain in the archive directory.
+
+The `purge` command cleans up HLS files that should have been deleted after successful consolidation:
+
+```bash
+export ARCHIVE_PATH="/path/to/archive"
+python3 app.py purge
+```
+
+This command will:
+- Scan the archive directory for all MP4 files
+- Identify HLS files (.ts and .m3u8) that **have** corresponding MP4 archives (meaning they should have been deleted already)
+- **Exclude files from the current hour and previous 2 hours** (to protect actively recording or consolidating files)
+- Delete the leftover HLS files and report how much space was freed
+
+**Note**: The purge command only deletes HLS files that have corresponding MP4 archives AND are older than 3 hours. This ensures that:
+- Files still being recorded are never deleted
+- Files in the consolidation queue are protected
+- Only leftover files from failed cleanup operations are removed
+
 ## Testing
 
 Run the unit tests:

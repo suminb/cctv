@@ -133,8 +133,13 @@ class TestCCTVArchiver(unittest.TestCase):
 
     @patch('app.os.listdir', return_value=[
         "archive_2026-02-07-09.mp4",
-        "archive_2026-02-06-09.mp4", # Old file
-        "archive_2025-11-01-09.mp4", # Very old file
+        "archive_2026-02-06-09.mp4", # Recent file
+        "archive_2025-11-01-09.mp4", # Very old file (should be deleted)
+        "2026-02-07-09_segment_00001.ts", # Recent TS file (not subject to retention)
+        "2025-11-01-09_segment_00001.ts", # Old TS file (not subject to retention)
+        "playlist_2026-02-07-09.m3u8", # Recent playlist (not subject to retention)
+        "playlist_2025-11-01-09.m3u8", # Old playlist (not subject to retention)
+        "other_file.txt", # Should not be deleted
     ])
     @patch('app.os.path.getmtime')
     @patch('app.os.remove')
@@ -145,12 +150,11 @@ class TestCCTVArchiver(unittest.TestCase):
         # Use the original (unmocked) datetime.fromtimestamp to avoid infinite recursion
         mock_datetime.fromtimestamp.side_effect = lambda ts: _original_datetime.fromtimestamp(ts)
         
-        # Mock file modification times
-        # 2026-02-07-09.mp4 is recent (within 90 days)
+        # Mock file modification times - only .mp4 files will be checked
         mock_getmtime.side_effect = [
-            datetime(2026, 2, 7, 9, 0, 0).timestamp(),   # 2026-02-07-09.mp4
-            datetime(2026, 2, 6, 9, 0, 0).timestamp(),   # 2026-02-06-09.mp4
-            datetime(2025, 11, 1, 9, 0, 0).timestamp(),  # 2025-11-01-09.mp4 (older than 90 days)
+            datetime(2026, 2, 7, 9, 0, 0).timestamp(),   # 2026-02-07-09.mp4 (recent)
+            datetime(2026, 2, 6, 9, 0, 0).timestamp(),   # 2026-02-06-09.mp4 (recent)
+            datetime(2025, 11, 1, 9, 0, 0).timestamp(),  # 2025-11-01-09.mp4 (old, should be deleted)
         ]
         
         app.ARCHIVE_PATH = "/test_archive"
@@ -159,8 +163,182 @@ class TestCCTVArchiver(unittest.TestCase):
 
         app.cleanup_old_files()
 
-        # Only the very old file should be removed
-        mock_remove.assert_called_once_with("/test_archive/archive_2025-11-01-09.mp4")
+        # Only old MP4 files should be removed by retention policy
+        # TS and M3U8 files are deleted after consolidation, not by retention policy
+        calls = mock_remove.call_args_list
+        self.assertIn(unittest.mock.call("/test_archive/archive_2025-11-01-09.mp4"), calls)
+        # TS and M3U8 files should NOT be removed by cleanup_old_files
+        self.assertNotIn(unittest.mock.call("/test_archive/2025-11-01-09_segment_00001.ts"), calls)
+        self.assertNotIn(unittest.mock.call("/test_archive/playlist_2025-11-01-09.m3u8"), calls)
+        # Recent MP4 files should not be removed
+        self.assertNotIn(unittest.mock.call("/test_archive/archive_2026-02-07-09.mp4"), calls)
+        self.assertNotIn(unittest.mock.call("/test_archive/archive_2026-02-06-09.mp4"), calls)
+        # Non-archive files should not be removed
+        self.assertNotIn(unittest.mock.call("/test_archive/other_file.txt"), calls)
+        # Should delete exactly 1 old MP4 file
+        self.assertEqual(mock_remove.call_count, 1)
+
+    @patch('app.os.path.exists', return_value=True)
+    @patch('app.os.listdir')
+    @patch('app.os.path.getsize')
+    @patch('app.os.remove')
+    def test_purge_orphaned_files_with_orphans(self, mock_remove, mock_getsize, mock_listdir, mock_exists):
+        """Test purge identifies and deletes HLS files that have corresponding MP4s."""
+        # Setup: MP4s exist for hours 05, 06, and 07 (all old enough to delete HLS files)
+        # HLS files for these hours should be deleted
+        # HLS files for hour 08 without MP4 should NOT be deleted
+        mock_listdir.return_value = [
+            "archive_2026-02-07-05.mp4",  # Hour 05 MP4
+            "archive_2026-02-07-06.mp4",  # Hour 06 MP4
+            "archive_2026-02-07-07.mp4",  # Hour 07 MP4
+            "2026-02-07-05_segment_00001.ts",  # Should be deleted (has MP4, old enough)
+            "playlist_2026-02-07-05.m3u8",  # Should be deleted (has MP4, old enough)
+            "2026-02-07-06_segment_00001.ts",  # Should be deleted (has MP4, old enough)
+            "2026-02-07-06_segment_00002.ts",  # Should be deleted (has MP4, old enough)
+            "playlist_2026-02-07-06.m3u8",  # Should be deleted (has MP4, old enough)
+            "2026-02-07-07_segment_00001.ts",  # Should be deleted (has MP4, old enough)
+            "2026-02-07-07_segment_00002.ts",  # Should be deleted (has MP4, old enough)
+            "playlist_2026-02-07-07.m3u8",  # Should be deleted (has MP4, old enough)
+            "2026-02-07-08_segment_00001.ts",  # Should NOT be deleted (no MP4 yet)
+            "playlist_2026-02-07-08.m3u8",  # Should NOT be deleted (no MP4 yet)
+            "other_file.txt",  # Not an HLS file
+        ]
+        
+        # Mock file sizes (1 MB each for simplicity)
+        mock_getsize.return_value = 1024 * 1024
+        
+        app.ARCHIVE_PATH = "/test_archive"
+        
+        deleted_count, deleted_size = app.purge_orphaned_files()
+        
+        # Should delete 8 files (1 ts + 1 m3u8 from hour 05, 2 ts + 1 m3u8 from hour 06, 2 ts + 1 m3u8 from hour 07)
+        self.assertEqual(deleted_count, 8)
+        self.assertEqual(deleted_size, 8 * 1024 * 1024)
+        
+        # Verify correct files were deleted
+        deleted_files = [call[0][0] for call in mock_remove.call_args_list]
+        self.assertIn("/test_archive/2026-02-07-05_segment_00001.ts", deleted_files)
+        self.assertIn("/test_archive/playlist_2026-02-07-05.m3u8", deleted_files)
+        self.assertIn("/test_archive/2026-02-07-06_segment_00001.ts", deleted_files)
+        self.assertIn("/test_archive/2026-02-07-06_segment_00002.ts", deleted_files)
+        self.assertIn("/test_archive/playlist_2026-02-07-06.m3u8", deleted_files)
+        self.assertIn("/test_archive/2026-02-07-07_segment_00001.ts", deleted_files)
+        self.assertIn("/test_archive/2026-02-07-07_segment_00002.ts", deleted_files)
+        self.assertIn("/test_archive/playlist_2026-02-07-07.m3u8", deleted_files)
+        
+        # Verify files that should NOT be deleted
+        self.assertNotIn("/test_archive/2026-02-07-08_segment_00001.ts", deleted_files)  # No MP4
+        self.assertNotIn("/test_archive/playlist_2026-02-07-08.m3u8", deleted_files)  # No MP4
+        self.assertNotIn("/test_archive/archive_2026-02-07-05.mp4", deleted_files)  # MP4 files
+        self.assertNotIn("/test_archive/archive_2026-02-07-06.mp4", deleted_files)  # MP4 files
+        self.assertNotIn("/test_archive/archive_2026-02-07-07.mp4", deleted_files)  # MP4 files
+        self.assertNotIn("/test_archive/other_file.txt", deleted_files)  # Not HLS
+
+    @patch('app.os.path.exists', return_value=True)
+    @patch('app.os.listdir')
+    def test_purge_orphaned_files_no_orphans(self, mock_listdir, mock_exists):
+        """Test purge when there are no HLS files that need deletion."""
+        # Scenario: HLS files exist but no MP4s yet (still being recorded/consolidated)
+        mock_listdir.return_value = [
+            "2026-02-07-10_segment_00001.ts",  # No MP4 - should not delete
+            "playlist_2026-02-07-10.m3u8",  # No MP4 - should not delete
+        ]
+        
+        app.ARCHIVE_PATH = "/test_archive"
+        
+        deleted_count, deleted_size = app.purge_orphaned_files()
+        
+        self.assertEqual(deleted_count, 0)
+        self.assertEqual(deleted_size, 0)
+
+    @patch('app.os.path.exists', return_value=False)
+    def test_purge_orphaned_files_no_archive_path(self, mock_exists):
+        """Test purge when archive path doesn't exist."""
+        app.ARCHIVE_PATH = "/nonexistent"
+        
+        deleted_count, deleted_size = app.purge_orphaned_files()
+        
+        self.assertEqual(deleted_count, 0)
+        self.assertEqual(deleted_size, 0)
+
+    @patch('app.datetime')
+    @patch('app.os.path.exists', return_value=True)
+    @patch('app.os.listdir')
+    @patch('app.os.path.getsize')
+    @patch('app.os.remove')
+    def test_purge_orphaned_files_excludes_recent_hours(self, mock_remove, mock_getsize, mock_listdir, mock_exists, mock_datetime):
+        """Test that purge excludes files from recent hours (current + previous 2 hours)."""
+        # Mock current time to Feb 16, 2026, 13:00:00
+        mock_datetime.utcnow.return_value = datetime(2026, 2, 16, 13, 0, 0)
+        
+        # Setup: Files from hours 13, 12, 11 (recent) should NOT be deleted even if they have MP4s
+        # Files from hour 10 and earlier WITH MP4s should be deleted
+        mock_listdir.return_value = [
+            "archive_2026-02-16-13.mp4",  # Current hour MP4
+            "archive_2026-02-16-12.mp4",  # 1 hour ago MP4
+            "archive_2026-02-16-11.mp4",  # 2 hours ago MP4
+            "archive_2026-02-16-10.mp4",  # 3 hours ago MP4
+            "archive_2026-02-16-09.mp4",  # 4 hours ago MP4
+            "2026-02-16-13_segment_00001.ts",  # Current hour - should NOT be deleted (recent)
+            "playlist_2026-02-16-13.m3u8",  # Current hour - should NOT be deleted (recent)
+            "2026-02-16-12_segment_00001.ts",  # 1 hour ago - should NOT be deleted (recent)
+            "playlist_2026-02-16-12.m3u8",  # 1 hour ago - should NOT be deleted (recent)
+            "2026-02-16-11_segment_00001.ts",  # 2 hours ago - should NOT be deleted (recent)
+            "playlist_2026-02-16-11.m3u8",  # 2 hours ago - should NOT be deleted (recent)
+            "2026-02-16-10_segment_00001.ts",  # 3 hours ago, has MP4 - SHOULD be deleted
+            "playlist_2026-02-16-10.m3u8",  # 3 hours ago, has MP4 - SHOULD be deleted
+            "2026-02-16-09_segment_00001.ts",  # 4 hours ago, has MP4 - SHOULD be deleted
+            "playlist_2026-02-16-09.m3u8",  # 4 hours ago, has MP4 - SHOULD be deleted
+        ]
+        
+        mock_getsize.return_value = 1024 * 1024  # 1 MB
+        
+        app.ARCHIVE_PATH = "/test_archive"
+        
+        deleted_count, deleted_size = app.purge_orphaned_files()
+        
+        # Should delete files from hours 10 and 09 (4 files: 2 ts + 2 m3u8)
+        self.assertEqual(deleted_count, 4)
+        self.assertEqual(deleted_size, 4 * 1024 * 1024)
+        
+        # Verify correct files were deleted
+        deleted_files = [call[0][0] for call in mock_remove.call_args_list]
+        self.assertIn("/test_archive/2026-02-16-10_segment_00001.ts", deleted_files)
+        self.assertIn("/test_archive/playlist_2026-02-16-10.m3u8", deleted_files)
+        self.assertIn("/test_archive/2026-02-16-09_segment_00001.ts", deleted_files)
+        self.assertIn("/test_archive/playlist_2026-02-16-09.m3u8", deleted_files)
+        
+        # Verify recent hour files were NOT deleted (even though they have MP4s)
+        self.assertNotIn("/test_archive/2026-02-16-13_segment_00001.ts", deleted_files)
+        self.assertNotIn("/test_archive/playlist_2026-02-16-13.m3u8", deleted_files)
+        self.assertNotIn("/test_archive/2026-02-16-12_segment_00001.ts", deleted_files)
+        self.assertNotIn("/test_archive/playlist_2026-02-16-12.m3u8", deleted_files)
+        self.assertNotIn("/test_archive/2026-02-16-11_segment_00001.ts", deleted_files)
+        self.assertNotIn("/test_archive/playlist_2026-02-16-11.m3u8", deleted_files)
+
+    def test_argument_parsing_purge(self):
+        """Test that the purge command line argument is properly parsed."""
+        import argparse
+        
+        # Test purge command
+        parser = argparse.ArgumentParser()
+        parser.add_argument("command", nargs="?", choices=["purge"])
+        args = parser.parse_args(["purge"])
+        
+        self.assertEqual(args.command, "purge")
+        self.assertTrue(args.command == "purge")
+    
+    def test_argument_parsing_default(self):
+        """Test that no command defaults to None (which triggers main)."""
+        import argparse
+        
+        # Test default (no command)
+        parser = argparse.ArgumentParser()
+        parser.add_argument("command", nargs="?", choices=["purge"])
+        args = parser.parse_args([])
+        
+        self.assertIsNone(args.command)
+        self.assertFalse(args.command == "purge")
 
 if __name__ == '__main__':
     unittest.main()

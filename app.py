@@ -2,6 +2,7 @@ import os
 import subprocess
 import time
 import signal
+import argparse
 from datetime import datetime, timedelta
 
 # --- Configuration ---
@@ -11,6 +12,7 @@ RETENTION_DAYS = int(os.environ.get("RETENTION_DAYS", 90))
 SEGMENT_TIME_SECONDS = 10
 CONSOLIDATION_CHECK_INTERVAL_SECONDS = 60  # Check every minute for hourly rollover
 CLEANUP_INTERVAL_SECONDS = 3600  # 1 hour
+BYTES_PER_MB = 1024 * 1024  # For file size conversions
 
 ffmpeg_process = None
 current_process_hour_identifier = None  # YYYY-MM-DD-HH
@@ -155,7 +157,11 @@ def check_consolidation_status():
 
 
 def cleanup_old_files():
-    """Deletes archived MP4 files older than the retention period."""
+    """Deletes archived MP4 files older than the retention period.
+    
+    Note: .ts segment files and .m3u8 playlists are deleted immediately after
+    successful consolidation (see check_consolidation_status), not by retention policy.
+    """
     global last_cleanup_time
     if time.time() - last_cleanup_time < CLEANUP_INTERVAL_SECONDS:
         return
@@ -167,7 +173,7 @@ def cleanup_old_files():
 
     try:
         for filename in os.listdir(ARCHIVE_PATH):
-            if filename.endswith(".mp4"):  # Only target MP4s now
+            if filename.endswith(".mp4"):  # Only target MP4 archived files
                 file_path = os.path.join(ARCHIVE_PATH, filename)
                 try:
                     file_mod_time = datetime.fromtimestamp(os.path.getmtime(file_path))
@@ -180,6 +186,115 @@ def cleanup_old_files():
         print(f"An error occurred during MP4 cleanup: {e}")
 
     last_cleanup_time = time.time()
+
+
+def purge_orphaned_files():
+    """Manually delete .ts segment files and .m3u8 playlists that should have been auto-deleted.
+    
+    When consolidation succeeds, it creates an MP4 and should automatically delete the source
+    HLS files (.ts segments and .m3u8 playlist). This automatic deletion happens in the
+    check_consolidation_status() function. However, if that automatic deletion fails due to
+    errors (file permissions, race conditions, etc.), these files remain in the archive
+    directory alongside their MP4.
+    
+    This command identifies and deletes HLS files that have corresponding MP4 files, as these
+    should have been deleted already but weren't (likely due to errors in the cleanup process).
+    
+    Files from recent hours (current + previous 2 hours) are excluded to avoid deleting files
+    that are still being recorded or in the consolidation queue.
+    
+    Returns:
+        tuple: (deleted_count, total_size_bytes) Number of files deleted and total size freed
+    """
+    if not os.path.exists(ARCHIVE_PATH):
+        print(f"Archive path {ARCHIVE_PATH} does not exist.")
+        return 0, 0
+    
+    print(f"Scanning {ARCHIVE_PATH} for HLS files that should have been deleted...")
+    
+    # Calculate recent hour identifiers to exclude (current + previous 2 hours)
+    # These files are likely still being recorded or waiting for consolidation
+    recent_hours = set()
+    now = datetime.utcnow()
+    for hours_ago in range(3):  # Current hour, 1 hour ago, 2 hours ago
+        recent_time = now - timedelta(hours=hours_ago)
+        recent_identifier = recent_time.strftime("%Y-%m-%d-%H")
+        recent_hours.add(recent_identifier)
+    
+    print(f"Excluding recent hours from purge: {sorted(recent_hours)}")
+    
+    # First, find all MP4 files and extract their hour identifiers
+    mp4_identifiers = set()
+    try:
+        for filename in os.listdir(ARCHIVE_PATH):
+            if filename.endswith(".mp4") and filename.startswith("archive_"):
+                # Extract YYYY-MM-DD-HH from archive_YYYY-MM-DD-HH.mp4
+                identifier = filename[8:-4]  # Remove "archive_" prefix and ".mp4" suffix
+                mp4_identifiers.add(identifier)
+    except Exception as e:
+        print(f"Error scanning for MP4 files: {e}")
+        return 0, 0
+    
+    print(f"Found {len(mp4_identifiers)} MP4 archive(s)")
+    
+    # Now find HLS files that should have been deleted (have corresponding MP4s)
+    files_to_delete = []
+    total_size = 0
+    
+    try:
+        for filename in os.listdir(ARCHIVE_PATH):
+            should_delete = False
+            identifier = None
+            
+            # Check if it's a segment file
+            if filename.endswith(".ts") and "_segment_" in filename:
+                # Extract YYYY-MM-DD-HH from YYYY-MM-DD-HH_segment_XXXXX.ts
+                identifier = filename.split("_segment_")[0]
+                # File should be deleted if it HAS an MP4 AND is not from a recent hour
+                should_delete = (identifier in mp4_identifiers) and (identifier not in recent_hours)
+            
+            # Check if it's a playlist file
+            elif filename.endswith(".m3u8") and filename.startswith("playlist_"):
+                # Extract YYYY-MM-DD-HH from playlist_YYYY-MM-DD-HH.m3u8
+                identifier = filename[9:-5]  # Remove "playlist_" prefix and ".m3u8" suffix
+                # File should be deleted if it HAS an MP4 AND is not from a recent hour
+                should_delete = (identifier in mp4_identifiers) and (identifier not in recent_hours)
+            
+            if should_delete:
+                file_path = os.path.join(ARCHIVE_PATH, filename)
+                try:
+                    file_size = os.path.getsize(file_path)
+                    files_to_delete.append((file_path, filename, file_size))
+                    total_size += file_size
+                except OSError as e:
+                    # Skip files we can't access (permissions, etc.)
+                    # They will not be included in the deletion list
+                    print(f"Warning: Cannot access {file_path}: {e}")
+    except Exception as e:
+        print(f"Error scanning for files to delete: {e}")
+        return 0, 0
+    
+    if not files_to_delete:
+        print("No HLS files found that need to be deleted.")
+        return 0, 0
+    
+    print(f"\nFound {len(files_to_delete)} HLS file(s) to delete ({total_size / BYTES_PER_MB:.2f} MB)")
+    
+    # Delete the files
+    deleted_count = 0
+    deleted_size = 0
+    
+    for file_path, filename, file_size in files_to_delete:
+        try:
+            os.remove(file_path)
+            print(f"Deleted: {filename} ({file_size / BYTES_PER_MB:.2f} MB)")
+            deleted_count += 1
+            deleted_size += file_size
+        except OSError as e:
+            print(f"Error deleting {file_path}: {e}")
+    
+    print(f"\nPurge complete: Deleted {deleted_count} file(s), freed {deleted_size / BYTES_PER_MB:.2f} MB")
+    return deleted_count, deleted_size
 
 
 def handle_shutdown_signal(signum, frame):
@@ -250,4 +365,37 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(
+        description="CCTV Archiver - Archive RTSP streams to MP4 files",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Commands:
+  (none)    Start the archiver in continuous recording mode (default)
+  purge     Delete orphaned HLS files (.ts and .m3u8) that don't have corresponding MP4 archives
+
+Environment Variables:
+  RTSP_URL         RTSP stream URL to capture (required for recording mode)
+  ARCHIVE_PATH     Directory for archived files (default: /archive)
+  RETENTION_DAYS   Number of days to keep archived files (default: 90)
+
+Examples:
+  # Start continuous recording
+  python3 app.py
+  
+  # Purge orphaned files
+  python3 app.py purge
+        """
+    )
+    parser.add_argument(
+        "command",
+        nargs="?",
+        choices=["purge"],
+        help="Command to execute (omit for normal recording mode)"
+    )
+    
+    args = parser.parse_args()
+    
+    if args.command == "purge":
+        purge_orphaned_files()
+    else:
+        main()

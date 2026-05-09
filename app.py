@@ -358,6 +358,7 @@ def main():
 
         # --- Periodic Cleanup ---
         cleanup_old_files()
+        purge_orphaned_files()
 
         time.sleep(
             CONSOLIDATION_CHECK_INTERVAL_SECONDS

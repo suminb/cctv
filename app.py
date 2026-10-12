@@ -1,5 +1,6 @@
 import os
 import subprocess
+import tempfile
 import time
 import signal
 import argparse
@@ -20,6 +21,7 @@ last_cleanup_time = time.time()
 
 # Store PIDs for consolidation tasks, if any
 consolidation_processes = {}
+consolidation_stderr_logs = {}  # identifier -> path of the consolidation stderr log
 
 
 def get_current_hour_identifier():
@@ -113,43 +115,71 @@ def consolidate_hourly_archive(prev_hour_identifier):
         output_mp4,
     ]
     print(f"DEBUG: FFMPEG command being executed for MP4 consolidation: {command}")
+    stderr_log = None
     try:
+        # stderr goes to a file, not a pipe: ffmpeg writes progress output
+        # continuously and an undrained pipe fills up (~64KB), blocking ffmpeg
+        # forever (the process never exits, so HLS files never get cleaned up).
+        # stdout from ffmpeg carries no useful output.
+        stderr_log = tempfile.NamedTemporaryFile(
+            prefix=f"consolidation_{prev_hour_identifier}_",
+            suffix=".log",
+            delete=False,
+        )
         # Use a separate Popen call, don't block the main loop
         consolidation_proc = subprocess.Popen(
-            command, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+            command, stdout=subprocess.DEVNULL, stderr=stderr_log
         )
+        stderr_log.close()
         consolidation_processes[prev_hour_identifier] = consolidation_proc
+        consolidation_stderr_logs[prev_hour_identifier] = stderr_log.name
         print(
             f"Consolidation process for {prev_hour_identifier} started (PID: {consolidation_proc.pid})."
         )
     except Exception as e:
+        if stderr_log is not None:
+            try:
+                stderr_log.close()
+                os.remove(stderr_log.name)
+            except OSError:
+                pass
         print(f"Error starting consolidation for {prev_hour_identifier}: {e}")
 
 
 def check_consolidation_status():
     """Checks the status of ongoing consolidation processes."""
-    global consolidation_processes
+    global consolidation_processes, consolidation_stderr_logs
     completed_identifiers = []
     for identifier, proc in consolidation_processes.items():
         if proc.poll() is not None:  # Process has finished
-            stdout, stderr = proc.communicate()
-            if proc.returncode == 0:
-                print(f"Consolidation for {identifier} finished successfully.")
-                # Delete HLS files for this hour
-                try:
-                    for f in os.listdir(ARCHIVE_PATH):
-                        if f.startswith(f"{identifier}_segment_") or f == f"playlist_{identifier}.m3u8":
-                            file_to_delete = os.path.join(ARCHIVE_PATH, f)
-                            os.remove(file_to_delete)
-                            print(f"Deleted HLS file: {file_to_delete}")
-                except Exception as e:
-                    print(f"Error deleting HLS files for {identifier}: {e}")
-            else:
-                print(
-                    f"Consolidation for {identifier} failed with code {proc.returncode}."
-                )
-                print(f"STDOUT:\n{stdout.decode()}")
-                print(f"STDERR:\n{stderr.decode()}")
+            proc.communicate()  # Reap the process (no pipes to drain)
+            stderr_log_path = consolidation_stderr_logs.pop(identifier, None)
+            try:
+                if proc.returncode == 0:
+                    print(f"Consolidation for {identifier} finished successfully.")
+                    # Delete HLS files for this hour
+                    try:
+                        for f in os.listdir(ARCHIVE_PATH):
+                            if f.startswith(f"{identifier}_segment_") or f == f"playlist_{identifier}.m3u8":
+                                file_to_delete = os.path.join(ARCHIVE_PATH, f)
+                                os.remove(file_to_delete)
+                                print(f"Deleted HLS file: {file_to_delete}")
+                    except Exception as e:
+                        print(f"Error deleting HLS files for {identifier}: {e}")
+                else:
+                    print(
+                        f"Consolidation for {identifier} failed with code {proc.returncode}."
+                    )
+                    if stderr_log_path and os.path.exists(stderr_log_path):
+                        with open(stderr_log_path, "rb") as f:
+                            f.seek(max(0, os.fstat(f.fileno()).st_size - 8192))
+                            print(f"STDERR (tail):\n{f.read().decode(errors='replace')}")
+            finally:
+                if stderr_log_path:
+                    try:
+                        os.remove(stderr_log_path)
+                    except OSError as e:
+                        print(f"Error removing consolidation log {stderr_log_path}: {e}")
             completed_identifiers.append(identifier)
 
     for identifier in completed_identifiers:

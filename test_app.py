@@ -1,6 +1,9 @@
 import unittest
 from unittest.mock import patch, MagicMock
 import os
+import shutil
+import sys
+import tempfile
 import time
 import signal
 import subprocess
@@ -100,6 +103,74 @@ class TestCCTVArchiver(unittest.TestCase):
         ]
         self.assertEqual(mock_popen.call_args[0][0], expected_command)
         self.assertIn("2026-02-07-09", app.consolidation_processes)
+
+    def test_consolidation_completes_when_child_writes_large_stderr(self):
+        """Regression test for the consolidation pipe deadlock.
+
+        ffmpeg writes progress to stderr continuously; for long encodes the
+        output exceeds the OS pipe buffer (~64KB). If the parent creates
+        stderr=PIPE but only drains it after the process exits, the child
+        blocks on write forever and never finishes.
+
+        Runs a real subprocess through app's own Popen kwargs: the child
+        writes >64KB to stderr then exits 0. Mimicking the main loop
+        (poll without draining) must still reach the success path: the
+        process is reaped from consolidation_processes and HLS files are
+        deleted.
+        """
+        child_code = (
+            "import sys\n"
+            "line = 'x' * 80 + '\\n'\n"
+            "for _ in range(1000):\n"  # ~80KB > 64KB pipe buffer
+            "    sys.stderr.write(line)\n"
+            "sys.stderr.flush()\n"
+            "sys.exit(0)\n"
+        )
+
+        archive = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, archive, ignore_errors=True)
+        playlist = os.path.join(archive, "playlist_2099-01-01-00.m3u8")
+        with open(playlist, "w") as f:
+            f.write("#EXTM3U\n")
+
+        real_popen = subprocess.Popen
+        popen_kwargs = {}
+
+        def fake_popen(cmd, **kwargs):
+            popen_kwargs.update(kwargs)
+            # Swap the command for a fast child, keep the parent's pipe setup
+            return real_popen([sys.executable, "-c", child_code], **kwargs)
+
+        app.consolidation_processes = {}
+        app.ARCHIVE_PATH = archive
+
+        with patch('app.subprocess.Popen', side_effect=fake_popen):
+            app.consolidate_hourly_archive("2099-01-01-00")
+
+        proc = app.consolidation_processes.get("2099-01-01-00")
+        self.assertIsNotNone(proc)
+
+        def reap():
+            if proc.poll() is None:
+                proc.kill()
+            try:
+                proc.communicate(timeout=5)
+            except Exception:
+                pass
+        self.addCleanup(reap)
+
+        # Mimic the main loop: poll until the consolidation is reaped
+        deadline = time.time() + 15
+        while ("2099-01-01-00" in app.consolidation_processes
+               and time.time() < deadline):
+            app.check_consolidation_status()
+            time.sleep(0.05)
+
+        self.assertNotIn("2099-01-01-00", app.consolidation_processes)
+        self.assertFalse(os.path.exists(playlist))  # success path deleted HLS
+
+        # The app must not create pipes it never drains (deadlock tripwire)
+        self.assertNotIn(subprocess.PIPE, popen_kwargs.values())
 
     @patch('app.os.listdir', return_value=[
         "2026-02-07-09_segment_00000.ts",

@@ -84,6 +84,29 @@ class TestCCTVArchiver(unittest.TestCase):
         mock_killpg.assert_any_call(1234, signal.SIGKILL) # Should be called after timeout
         self.assertIsNone(app.ffmpeg_process)
 
+    @patch('app.os.killpg')
+    @patch('app.os.getpgid')
+    def test_shutdown_stops_consolidation_without_signaling_own_group(self, mock_getpgid, mock_killpg):
+        """Consolidation processes are not started with setsid, so they share
+        the archiver's own process group. Signaling their process group would
+        SIGTERM/SIGKILL the archiver itself. Shutdown must signal only the
+        consolidation process (terminate/kill on the Popen handle).
+        """
+        # Simulates the real bug: the consolidation proc is in our group
+        mock_getpgid.return_value = os.getpgrp()
+
+        consolidation_proc = MagicMock()
+        consolidation_proc.poll.return_value = None  # still running
+        consolidation_proc.wait.return_value = 0
+        app.ffmpeg_process = None
+        app.consolidation_processes = {"2099-01-01-00": consolidation_proc}
+
+        with self.assertRaises(SystemExit):
+            app.handle_shutdown_signal(signal.SIGTERM, None)
+
+        consolidation_proc.terminate.assert_called_once_with()
+        mock_killpg.assert_not_called()  # must never signal our own group
+
     @patch('app.os.path.exists', return_value=True)
     @patch('app.subprocess.Popen')
     @patch('app.ARCHIVE_PATH', "/test_archive")
@@ -214,23 +237,27 @@ class TestCCTVArchiver(unittest.TestCase):
     ])
     @patch('app.os.path.getmtime')
     @patch('app.os.remove')
+    @patch('app.time.time')
     @patch('app.datetime')
-    def test_cleanup_old_files(self, mock_datetime, mock_remove, mock_getmtime, mock_listdir):
-        # Mock current time to Feb 7, 2026, 10:00:00
+    def test_cleanup_old_files(self, mock_datetime, mock_time, mock_remove, mock_getmtime, mock_listdir):
+        # Mock current time to Feb 7, 2026, 10:00:00 (retention compares raw
+        # POSIX timestamps, so the clock must be pinned for the fixture)
+        now_ts = datetime(2026, 2, 7, 10, 0, 0).timestamp()
+        mock_time.return_value = now_ts
         mock_datetime.utcnow.return_value = datetime(2026, 2, 7, 10, 0, 0)
         # Use the original (unmocked) datetime.fromtimestamp to avoid infinite recursion
         mock_datetime.fromtimestamp.side_effect = lambda ts: _original_datetime.fromtimestamp(ts)
-        
+
         # Mock file modification times - only .mp4 files will be checked
         mock_getmtime.side_effect = [
             datetime(2026, 2, 7, 9, 0, 0).timestamp(),   # 2026-02-07-09.mp4 (recent)
             datetime(2026, 2, 6, 9, 0, 0).timestamp(),   # 2026-02-06-09.mp4 (recent)
             datetime(2025, 11, 1, 9, 0, 0).timestamp(),  # 2025-11-01-09.mp4 (old, should be deleted)
         ]
-        
+
         app.ARCHIVE_PATH = "/test_archive"
         app.RETENTION_DAYS = 90
-        app.last_cleanup_time = time.time() - app.CLEANUP_INTERVAL_SECONDS - 1 # Ensure cleanup runs
+        app.last_cleanup_time = now_ts - app.CLEANUP_INTERVAL_SECONDS - 1 # Ensure cleanup runs
 
         app.cleanup_old_files()
 
@@ -247,6 +274,56 @@ class TestCCTVArchiver(unittest.TestCase):
         # Non-archive files should not be removed
         self.assertNotIn(unittest.mock.call("/test_archive/other_file.txt"), calls)
         # Should delete exactly 1 old MP4 file
+        self.assertEqual(mock_remove.call_count, 1)
+
+    @patch('app.os.listdir', return_value=[
+        "archive_old.mp4",   # expired, must be deleted
+        "archive_recent.mp4",  # within retention, must be kept
+    ])
+    @patch('app.os.path.getmtime')
+    @patch('app.os.remove')
+    def test_cleanup_old_files_is_timezone_independent(self, mock_remove, mock_getmtime, mock_listdir):
+        """Retention cutoff must be timezone-free.
+
+        The old code compared datetime.fromtimestamp() (local timezone)
+        against datetime.utcnow() (UTC). In a UTC+9 timezone, files up to
+        9 hours older than the retention cutoff were wrongly kept (and in
+        UTC-x timezones, slightly newer files were wrongly deleted).
+        """
+        fixed_now = time.time()
+
+        old_ts = fixed_now - (90 * 86400) - (5 * 3600)  # 90d5h old: expired
+        recent_ts = fixed_now - (30 * 86400)            # 30d old: keep
+        mock_getmtime.side_effect = [old_ts, recent_ts]
+
+        app.RETENTION_DAYS = 90
+        app.ARCHIVE_PATH = "/test_archive"
+        app.last_cleanup_time = time.time() - app.CLEANUP_INTERVAL_SECONDS - 1
+
+        # Force a non-UTC timezone to expose the local-vs-UTC comparison.
+        # The bug (and the fix) is observable regardless of the host tz only
+        # if we pin a tz whose offset != 0.
+        old_tz = os.environ.get("TZ")
+        os.environ["TZ"] = "Asia/Seoul"  # UTC+9
+        time.tzset()
+
+        def restore_tz():
+            if old_tz is None:
+                os.environ.pop("TZ", None)
+            else:
+                os.environ["TZ"] = old_tz
+            time.tzset()
+        self.addCleanup(restore_tz)
+
+        with patch('app.datetime') as mock_datetime:
+            mock_datetime.utcnow.return_value = datetime.utcfromtimestamp(fixed_now)
+            # Pre-fix code calls fromtimestamp(); keep it real (tz-sensitive)
+            mock_datetime.fromtimestamp.side_effect = lambda ts: _original_datetime.fromtimestamp(ts)
+            app.cleanup_old_files()
+
+        deleted = [call[0][0] for call in mock_remove.call_args_list]
+        self.assertIn("/test_archive/archive_old.mp4", deleted)      # expired -> deleted
+        self.assertNotIn("/test_archive/archive_recent.mp4", deleted)  # recent -> kept
         self.assertEqual(mock_remove.call_count, 1)
 
     @patch('app.os.path.exists', return_value=True)

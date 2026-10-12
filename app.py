@@ -197,17 +197,17 @@ def cleanup_old_files():
         return
 
     print("Running cleanup of old MP4 files...")
-    now = datetime.utcnow()
-    retention_delta = timedelta(days=RETENTION_DAYS)
-    cutoff_date = now - retention_delta
+    # Compare raw POSIX timestamps: mixing datetime.fromtimestamp() (local
+    # timezone) with datetime.utcnow() (UTC) shifts the cutoff by the
+    # machine's UTC offset and delays (or skips) deletion of expired files.
+    cutoff_ts = time.time() - (RETENTION_DAYS * 86400)
 
     try:
         for filename in os.listdir(ARCHIVE_PATH):
             if filename.endswith(".mp4"):  # Only target MP4 archived files
                 file_path = os.path.join(ARCHIVE_PATH, filename)
                 try:
-                    file_mod_time = datetime.fromtimestamp(os.path.getmtime(file_path))
-                    if file_mod_time < cutoff_date:
+                    if os.path.getmtime(file_path) < cutoff_ts:
                         print(f"Deleting old MP4 file: {filename}")
                         os.remove(file_path)
                 except OSError as e:
@@ -335,16 +335,20 @@ def handle_shutdown_signal(signum, frame):
     for identifier, proc in consolidation_processes.items():
         if proc.poll() is None:
             print(
-                f"Waiting for consolidation process {identifier} to finish (PID: {proc.pid})..."
+                f"Stopping consolidation process {identifier} (PID: {proc.pid})..."
             )
-            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+            # Signal the process directly: consolidation processes are not
+            # started with setsid, so signaling their process group would
+            # also terminate this archiver.
+            proc.terminate()
             try:
                 proc.wait(timeout=30)
+                print(f"Consolidation process {identifier} stopped.")
             except subprocess.TimeoutExpired:
                 print(
                     f"Consolidation process {identifier} did not stop gracefully, killing."
                 )
-                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                proc.kill()
     exit(0)
 
 

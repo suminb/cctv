@@ -105,9 +105,9 @@ def consolidate_hourly_archive(prev_hour_identifier):
         "-i",
         hourly_playlist,
         "-c:v",
-        "libx265",  # Use H.265 video codec
+        "libx264",  # Use H.264 video codec
         "-preset",
-        "medium",  # Medium speed/compression balance
+        "veryfast",  # Favor speed over compression
         "-crf",
         "26",  # Constant Rate Factor for quality (23-28 is common)
         "-c:a",

@@ -2,7 +2,7 @@
 
 A Python application that archives RTSP video streams by:
 - Capturing live RTSP streams and saving them as HLS segments
-- Consolidating hourly segments into MP4 files using H.265 codec
+- Consolidating hourly segments into MP4 files using H.264 codec
 - Automatically cleaning up old archived files based on retention period
 
 ## Features

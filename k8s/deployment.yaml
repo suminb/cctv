@@ -26,6 +26,12 @@ metadata:
 spec:
   replicas: 1
   revisionHistoryLimit: 5
+  # Recreate (not RollingUpdate): the archive PVC is ReadWriteOnce, so a new
+  # pod on another node can never start while the old pod still holds the
+  # volume. RollingUpdate deadlocks (new ContainerCreating forever, old never
+  # terminates). Recreate stops the old pod first (brief recording gap).
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: cctv-archiver

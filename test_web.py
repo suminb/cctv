@@ -89,3 +89,37 @@ class TestWebStatic(unittest.TestCase):
             c = _TC(_web.app)
             r = c.get('/video/archive_2026-10-16-14.mp4')
             self.assertEqual(r.status_code, 404)
+
+    def test_hls_guard_direct(self):
+        import web as _web
+        r = _web.serve_hls('../app.py')
+        self.assertEqual(r.status_code, 404)
+        r = _web.serve_hls('evil.mp4')
+        self.assertEqual(r.status_code, 404)
+        r = _web.serve_video('other.txt')
+        self.assertEqual(r.status_code, 404)
+
+    def test_hls_happy_path_mime(self):
+        import os as _os
+        import tempfile as _tf
+        import web as _web
+        from fastapi.testclient import TestClient as _TC
+        with _tf.TemporaryDirectory() as tmp:
+            m3u8 = 'playlist_2026-10-16-14.m3u8'
+            ts = 'playlist_2026-10-16-14_segment_00000.ts'
+            mp4 = 'archive_2026-10-16-14.mp4'
+            for name, data in ((m3u8, b'#EXTM3U\n'), (ts, b'\x47' * 188), (mp4, b'\x00\x00\x00\x18ftyp')):
+                with open(_os.path.join(tmp, name), 'wb') as f:
+                    f.write(data)
+            with patch.object(_web, 'get_token', return_value=''), \
+                 patch.object(_web, 'get_archive_path', return_value=tmp):
+                c = _TC(_web.app)
+                r = c.get(f'/hls/{m3u8}')
+                self.assertEqual(r.status_code, 200)
+                self.assertIn('vnd.apple.mpegurl', r.headers.get('content-type', ''))
+                r = c.get(f'/hls/{ts}')
+                self.assertEqual(r.status_code, 200)
+                self.assertIn('mp2t', r.headers.get('content-type', ''))
+                r = c.get(f'/video/{mp4}')
+                self.assertEqual(r.status_code, 200)
+                self.assertIn('mp4', r.headers.get('content-type', ''))

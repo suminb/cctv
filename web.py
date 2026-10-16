@@ -1,9 +1,7 @@
 # web.py
 import os
 from fastapi import FastAPI, Query, Request
-from fastapi.responses import JSONResponse
-from fastapi.responses import FileResponse
-import pathlib
+from fastapi.responses import FileResponse, JSONResponse
 import app as archiver
 
 def get_token() -> str:
@@ -82,4 +80,7 @@ def serve_video(name: str):
 
 @app.get('/')
 def index():
-    return FileResponse(os.path.join(STATIC_DIR, 'index.html'), media_type='text/html')
+    p = os.path.join(STATIC_DIR, 'index.html')
+    if not os.path.exists(p):
+        return JSONResponse({'detail': 'not found'}, status_code=404)
+    return FileResponse(p, media_type='text/html')

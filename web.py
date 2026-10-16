@@ -1,6 +1,6 @@
 # web.py
 import os
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Query, Request
 from fastapi.responses import JSONResponse
 import app as archiver
 
@@ -31,3 +31,24 @@ def api_live():
     if not os.path.exists(playlist):
         return JSONResponse({'detail': 'live not ready'}, status_code=404)
     return {'hour': hour, 'playlist_url': f'/hls/playlist_{hour}.m3u8'}
+
+@app.get('/api/files')
+def api_files(date: str | None = Query(default=None)):
+    base = get_archive_path()
+    try:
+        names = os.listdir(base)
+    except FileNotFoundError:
+        return []
+    out = []
+    for n in names:
+        if not (n.startswith('archive_') and n.endswith('.mp4')):
+            continue
+        if date and f'archive_{date}' not in n:
+            continue
+        p = os.path.join(base, n)
+        try:
+            out.append({'name': n, 'hour': n[8:-4], 'size': os.path.getsize(p), 'mtime': os.path.getmtime(p)})
+        except OSError:
+            continue
+    out.sort(key=lambda f: f['name'], reverse=True)
+    return out

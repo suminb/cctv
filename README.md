@@ -117,6 +117,21 @@ docker push zot.whiterabbit.co.kr/app/cctv:latest
 docker push zot.whiterabbit.co.kr/app/cctv:$(git rev-parse --short HEAD)
 ```
 
+**Deploy by unique tag, not `latest`.** Kubernetes only rolls a pod when the pod
+spec changes — re-pushing code under an existing tag (`:latest`, `:web-test`)
+changes nothing and the cluster keeps running the old digest. Always deploy the
+short-SHA tag:
+
+```bash
+TAG=$(git rev-parse --short HEAD)
+docker buildx build --platform linux/amd64 -t zot.whiterabbit.co.kr/app/cctv:$TAG --push .
+kubectl -n cctv set image deploy/cctv-archiver archiver=zot.whiterabbit.co.kr/app/cctv:$TAG
+kubectl -n cctv rollout status deploy/cctv-archiver
+```
+
+Never re-push a tag that has already been deployed (unless you also
+`kubectl -n cctv rollout restart deploy/cctv-archiver`).
+
 ### Running Locally (without Docker)
 
 Ensure you have Python 3.11+ and ffmpeg installed, then run:

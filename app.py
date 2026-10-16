@@ -28,6 +28,16 @@ SEGMENT_TIME_SECONDS = 10
 CONSOLIDATION_CHECK_INTERVAL_SECONDS = 60  # Check every minute for hourly rollover
 CLEANUP_INTERVAL_SECONDS = 3600  # 1 hour
 BYTES_PER_MB = 1024 * 1024  # For file size conversions
+try:
+    MIN_CONSOLIDATED_DURATION_SECONDS = float(
+        os.environ.get("MIN_CONSOLIDATED_DURATION_SECONDS", 3000)
+    )
+except ValueError:
+    print(
+        f"Warning: invalid MIN_CONSOLIDATED_DURATION_SECONDS="
+        f"{os.environ.get('MIN_CONSOLIDATED_DURATION_SECONDS')!r}, defaulting to 3000"
+    )
+    MIN_CONSOLIDATED_DURATION_SECONDS = 3000.0
 
 ffmpeg_process = None
 current_process_hour_identifier = None  # YYYY-MM-DD-HH
@@ -43,6 +53,28 @@ def get_current_hour_identifier():
     return datetime.utcnow().strftime("%Y-%m-%d-%H")
 
 
+def get_next_segment_number(hour_identifier):
+    """Returns one past the highest existing segment number for the hour.
+
+    A fresh ffmpeg HLS process starts numbering at 0, which would overwrite
+    segments recorded before a restart (pod redeploy, crash recovery). Resuming
+    past the highest existing number — together with -hls_flags append_list —
+    preserves pre-restart footage in the same hour.
+    """
+    prefix = f"{hour_identifier}_segment_"
+    highest = -1
+    try:
+        names = os.listdir(ARCHIVE_PATH)
+    except FileNotFoundError:
+        return 0
+    for n in names:
+        if n.startswith(prefix) and n.endswith(".ts"):
+            num = n[len(prefix):-len(".ts")]
+            if num.isdigit():
+                highest = max(highest, int(num))
+    return highest + 1
+
+
 def start_ffmpeg_process(hour_identifier):
     """Starts a new ffmpeg process for the given hour identifier."""
     global ffmpeg_process, current_process_hour_identifier
@@ -55,6 +87,9 @@ def start_ffmpeg_process(hour_identifier):
 
     playlist_path = os.path.join(ARCHIVE_PATH, f"playlist_{hour_identifier}.m3u8")
     segment_filename = os.path.join(ARCHIVE_PATH, f"{hour_identifier}_segment_%05d.ts")
+    # Resume past existing segments so a restart appends to this hour instead
+    # of overwriting it (see get_next_segment_number).
+    next_number = get_next_segment_number(hour_identifier)
 
     command = [
         "ffmpeg",
@@ -72,6 +107,10 @@ def start_ffmpeg_process(hour_identifier):
         "0",
         "-hls_segment_filename",
         segment_filename,
+        "-start_number",
+        str(next_number),
+        "-hls_flags",
+        "append_list",
         playlist_path,
     ]
 
@@ -160,6 +199,41 @@ def consolidate_hourly_archive(prev_hour_identifier):
         print(f"Error starting consolidation for {prev_hour_identifier}: {e}")
 
 
+def get_mp4_duration_seconds(mp4_path):
+    """Returns the MP4 duration in seconds via ffprobe, or None if unknown.
+
+    None (missing binary, timeout, unparsable output) is fail-safe: callers
+    treat it as "cannot prove complete" and keep the HLS sources.
+    """
+    try:
+        proc = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                mp4_path,
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=60,
+        )
+    except (OSError, subprocess.TimeoutExpired) as e:
+        print(f"Warning: ffprobe failed for {mp4_path}: {e}")
+        return None
+    if proc.returncode != 0:
+        print(f"Warning: ffprobe exited {proc.returncode} for {mp4_path}")
+        return None
+    try:
+        return float(proc.stdout.decode().strip())
+    except ValueError:
+        print(f"Warning: could not parse ffprobe output for {mp4_path}: {proc.stdout!r}")
+        return None
+
+
 def check_consolidation_status():
     """Checks the status of ongoing consolidation processes."""
     global consolidation_processes, consolidation_stderr_logs
@@ -170,16 +244,44 @@ def check_consolidation_status():
             stderr_log_path = consolidation_stderr_logs.pop(identifier, None)
             try:
                 if proc.returncode == 0:
-                    print(f"Consolidation for {identifier} finished successfully.")
-                    # Delete HLS files for this hour
-                    try:
-                        for f in os.listdir(ARCHIVE_PATH):
-                            if f.startswith(f"{identifier}_segment_") or f == f"playlist_{identifier}.m3u8":
-                                file_to_delete = os.path.join(ARCHIVE_PATH, f)
-                                os.remove(file_to_delete)
-                                print(f"Deleted HLS file: {file_to_delete}")
-                    except Exception as e:
-                        print(f"Error deleting HLS files for {identifier}: {e}")
+                    output_mp4 = os.path.join(ARCHIVE_PATH, f"archive_{identifier}.mp4")
+                    duration = get_mp4_duration_seconds(output_mp4)
+                    if duration is not None and duration >= MIN_CONSOLIDATED_DURATION_SECONDS:
+                        print(
+                            f"Consolidation for {identifier} finished successfully "
+                            f"({duration:.0f}s)."
+                        )
+                        # Delete HLS files for this hour
+                        try:
+                            for f in os.listdir(ARCHIVE_PATH):
+                                if f.startswith(f"{identifier}_segment_") or f == f"playlist_{identifier}.m3u8":
+                                    file_to_delete = os.path.join(ARCHIVE_PATH, f)
+                                    os.remove(file_to_delete)
+                                    print(f"Deleted HLS file: {file_to_delete}")
+                        except Exception as e:
+                            print(f"Error deleting HLS files for {identifier}: {e}")
+                    else:
+                        # Short or unverifiable archive (e.g. restarts ate most
+                        # of the hour): keep the HLS sources for manual review
+                        # instead of deleting the only evidence. A `.keep_*`
+                        # marker also shields them from purge_orphaned_files.
+                        # The short MP4 itself is kept (partial footage beats none).
+                        if duration is None:
+                            reason = "duration unknown (ffprobe failed)"
+                        else:
+                            reason = (
+                                f"duration {duration:.0f}s below minimum "
+                                f"{MIN_CONSOLIDATED_DURATION_SECONDS:.0f}s"
+                            )
+                        print(
+                            f"Consolidation for {identifier} produced a short "
+                            f"archive ({reason}). Keeping HLS sources."
+                        )
+                        marker = os.path.join(ARCHIVE_PATH, f".keep_{identifier}")
+                        try:
+                            open(marker, "w").close()
+                        except OSError as e:
+                            print(f"Error writing keep-marker {marker}: {e}")
                 else:
                     print(
                         f"Consolidation for {identifier} failed with code {proc.returncode}."
@@ -305,6 +407,17 @@ def purge_orphaned_files():
                 should_delete = (identifier in mp4_identifiers) and (identifier not in recent_hours)
             
             if should_delete:
+                # Hours flagged incomplete by the duration gate (see
+                # check_consolidation_status) keep their sources for manual
+                # review — never purge them automatically.
+                keep_marker = os.path.join(ARCHIVE_PATH, f".keep_{identifier}")
+                if os.path.exists(keep_marker):
+                    print(
+                        f"Keeping HLS files for {identifier} "
+                        f"(marked incomplete, remove {keep_marker} after review "
+                        f"to allow purging)"
+                    )
+                    continue
                 file_path = os.path.join(ARCHIVE_PATH, filename)
                 try:
                     file_size = os.path.getsize(file_path)

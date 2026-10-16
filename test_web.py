@@ -132,3 +132,7 @@ class TestWebIndex(unittest.TestCase):
             r = c.get('/')
             self.assertEqual(r.status_code, 200)
             self.assertIn('<video', r.text)
+            self.assertIn('hls.js', r.text)
+            self.assertIn('/api/live', r.text)
+            self.assertIn('/api/files', r.text)
+            self.assertIn('localStorage', r.text)

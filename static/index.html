@@ -3,7 +3,7 @@
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>CCTV Viewer</title>
 <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
-<style>body{font-family:system-ui;margin:0;background:#111;color:#eee}main{max-width:960px;margin:0 auto;padding:12px}video{width:100%;background:#000;border-radius:8px}#list{margin-top:12px;display:flex;flex-direction:column;gap:6px}.row{background:#222;border:0;color:#eee;text-align:left;padding:10px;border-radius:6px;cursor:pointer}.row.live{border:1px solid #e33}.row.active{background:#333}input{padding:8px;border-radius:6px;border:0}#bar{display:flex;gap:8px;margin:12px 0}</style>
+<style>body{font-family:system-ui;margin:0;background:#111;color:#eee}main{max-width:960px;margin:0 auto;padding:12px;height:100vh;height:100dvh;box-sizing:border-box;display:flex;flex-direction:column}video{width:100%;background:#000;border-radius:8px;flex-shrink:0}#list{margin-top:12px;display:flex;flex-direction:column;gap:6px;flex:1;overflow-y:auto;min-height:0}.row{background:#222;border:0;color:#eee;text-align:left;padding:10px;border-radius:6px;cursor:pointer}.row.live{border:1px solid #e33}.row.active{background:#333}input{padding:8px;border-radius:6px;border:0}#bar{display:flex;gap:8px;margin:12px 0}</style>
 </head>
 <body><main>
 <h2>CCTV <span id="state">LIVE</span></h2>
@@ -13,6 +13,8 @@
 <script>
 const v=document.getElementById('v'),list=document.getElementById('list'),d=document.getElementById('d'),tok=document.getElementById('tok');
 tok.value=localStorage.getItem('cctv')||'';
+function syncCookie(){document.cookie='cctv_token='+encodeURIComponent(tok.value)+';path=/;max-age=31536000;SameSite=Lax';}
+syncCookie();
 const T=(hasQ)=>tok.value?((hasQ?'&token=':'?token=')+encodeURIComponent(tok.value)):'';
 let hls=null,mode='live';
 function playLive(){fetch('/api/live'+T()).then(r=>{if(!r.ok){document.getElementById('state').textContent=r.status===401?'need token':'waiting for live…';return null;}return r.json();}).then(j=>{if(!j)return;mode='live';document.getElementById('state').textContent='LIVE '+j.hour;if(Hls.isSupported()){if(hls)hls.destroy();hls=new Hls();hls.loadSource(j.playlist_url+T());hls.attachMedia(v);v.play().catch(()=>{});}else{v.src=j.playlist_url+T();v.play().catch(()=>{});}mark();});}
@@ -20,7 +22,7 @@ function playMp4(n){mode=n;if(hls){hls.destroy();hls=null;}v.src='/video/'+n+T()
 function mark(){[...list.children].forEach(b=>b.classList.toggle('active',(b.dataset.n||'live')===mode));}
 function load(){const q=d.value?('?date='+d.value):'';fetch('/api/files'+q+T(!!q)).then(r=>{if(r.status===401){document.getElementById('state').textContent='need token';return[];}return r.json();}).then(fs=>{list.innerHTML='';const live=document.createElement('button');live.className='row live';live.textContent='🔴 LIVE — back to live';live.onclick=playLive;live.dataset.n='live';list.appendChild(live);fs.forEach(f=>{const b=document.createElement('button');b.className='row';b.dataset.n=f.name;b.textContent=f.hour+' — '+f.name+' — '+(f.size/1048576).toFixed(1)+' MB';b.onclick=()=>playMp4(f.name);list.appendChild(b);});mark();});}
 d.onchange=load;document.getElementById('clr').onclick=()=>{d.value='';load();};
-tok.onchange=()=>{localStorage.setItem('cctv',tok.value);load();};
+tok.onchange=()=>{localStorage.setItem('cctv',tok.value);syncCookie();load();};
 load();playLive();setInterval(()=>{load();if(mode==='live')playLive();},60000);
 </script>
 </main></body></html>

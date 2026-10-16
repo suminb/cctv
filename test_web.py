@@ -47,6 +47,22 @@ class TestWebLive(unittest.TestCase):
             r = c.get('/api/live')
             self.assertEqual(r.status_code, 200)
 
+    def test_auth_allows_valid_cookie_token(self):
+        # HLS segment requests carry no query/header (URLs come from the
+        # playlist body), so the UI mirrors the token into a cookie.
+        with patch.object(web, 'get_token', return_value='secret123'), \
+             patch('app.get_current_hour_identifier', return_value='2026-10-16-14'), \
+             patch('os.path.exists', return_value=True):
+            c = TestClient(web.app)
+            r = c.get('/api/live', cookies={'cctv_token': 'secret123'})
+            self.assertEqual(r.status_code, 200)
+
+    def test_auth_rejects_bad_cookie_token(self):
+        with patch.object(web, 'get_token', return_value='secret123'):
+            c = TestClient(web.app)
+            r = c.get('/api/live', cookies={'cctv_token': 'wrong'})
+            self.assertEqual(r.status_code, 401)
+
 
 class TestWebFiles(unittest.TestCase):
     def test_files_sorted_newest_first(self):

@@ -45,7 +45,10 @@ spec:
       terminationGracePeriodSeconds: 45
       containers:
         - name: archiver
-          # IMPORTANT: Replace this with the actual path to your built image
+          # IMPORTANT: Replace this with the actual path to your built image.
+          # Prefer unique per-release tags (e.g. :<git-short-sha>): Kubernetes
+          # will NOT restart a pod when an existing tag is re-pushed with new
+          # content, so deploying by a mutable tag silently keeps the old code.
           image: zot.whiterabbit.co.kr/app/cctv:latest
           imagePullPolicy: Always
           # --- Environment Variables ---

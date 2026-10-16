@@ -1,0 +1,34 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: cctv-viewer
+  namespace: cctv
+  labels:
+    app: cctv-archiver
+  annotations:
+    # The whiterabbit wildcard, pushed into cctv-viewer-tls by the certbot
+    # deploy hook on tinyservices (see hyperion
+    # sites/wrhq/services/certificates/README.md and
+    # ansible/playbooks/k8s-certs.yml; this secret is in k8s_cert_secrets).
+    # Deliberately NO cert-manager annotation: cctv.whiterabbit.co.kr is
+    # LAN-only, so the cluster's HTTP-01 issuer could never validate it and
+    # would just fight for ownership of the secret.
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: cctv.whiterabbit.co.kr
+      http:
+        paths:
+          - backend:
+              service:
+                name: cctv-viewer
+                port:
+                  number: 80
+            path: /
+            pathType: Prefix
+  tls:
+    - hosts:
+        - cctv.whiterabbit.co.kr
+      secretName: cctv-viewer-tls

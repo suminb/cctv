@@ -44,11 +44,49 @@ class TestCCTVArchiver(unittest.TestCase):
             "-hls_time", "10",
             "-hls_list_size", "0",
             "-hls_segment_filename", "/test_archive/2026-02-07-10_segment_%05d.ts",
+            "-start_number", "0",
+            "-hls_flags", "append_list",
             "/test_archive/playlist_2026-02-07-10.m3u8",
         ]
         self.assertEqual(mock_popen.call_args[0][0], expected_command)
         self.assertIsNotNone(app.ffmpeg_process)
         self.assertEqual(app.current_process_hour_identifier, "2026-02-07-10")
+
+    @patch('app.os.listdir', return_value=[])
+    def test_get_next_segment_number_empty(self, mock_listdir):
+        self.assertEqual(app.get_next_segment_number("2026-02-07-10"), 0)
+
+    @patch('app.os.listdir', side_effect=FileNotFoundError)
+    def test_get_next_segment_number_no_dir(self, mock_listdir):
+        self.assertEqual(app.get_next_segment_number("2026-02-07-10"), 0)
+
+    @patch('app.os.listdir', return_value=[
+        "2026-02-07-10_segment_00007.ts",
+        "2026-02-07-10_segment_00012.ts",
+        "2026-02-07-10_segment_00003.ts",
+        "playlist_2026-02-07-10.m3u8",  # not a segment, ignored
+        "archive_2026-02-07-10.mp4",  # not a segment, ignored
+        "2026-02-07-09_segment_00200.ts",  # other hour, ignored
+        "2026-02-07-10_segment_broken.ts",  # non-numeric, ignored
+    ])
+    def test_get_next_segment_number_resumes(self, mock_listdir):
+        self.assertEqual(app.get_next_segment_number("2026-02-07-10"), 13)
+
+    @patch('app.os.makedirs')
+    @patch('app.subprocess.Popen')
+    @patch('app.os.listdir', return_value=["2026-02-07-10_segment_00041.ts"])
+    @patch('app.RTSP_URL', "rtsp://test_url")
+    @patch('app.ARCHIVE_PATH', "/test_archive")
+    @patch('app.current_process_hour_identifier', None)
+    def test_start_ffmpeg_process_resumes_numbering(self, mock_listdir, mock_popen, mock_makedirs):
+        app.ffmpeg_process = None
+        app.start_ffmpeg_process("2026-02-07-10")
+
+        command = mock_popen.call_args[0][0]
+        self.assertIn("-start_number", command)
+        self.assertEqual(command[command.index("-start_number") + 1], "42")
+        self.assertIn("-hls_flags", command)
+        self.assertEqual(command[command.index("-hls_flags") + 1], "append_list")
         
     @patch('app.RTSP_URL', None) # Simulate missing RTSP_URL
     def test_start_ffmpeg_process_no_rtsp_url(self):
@@ -127,7 +165,8 @@ class TestCCTVArchiver(unittest.TestCase):
         self.assertEqual(mock_popen.call_args[0][0], expected_command)
         self.assertIn("2026-02-07-09", app.consolidation_processes)
 
-    def test_consolidation_completes_when_child_writes_large_stderr(self):
+    @patch('app.get_mp4_duration_seconds', return_value=3500.0)  # full hour -> delete path
+    def test_consolidation_completes_when_child_writes_large_stderr(self, _mock_duration):
         """Regression test for the consolidation pipe deadlock.
 
         ffmpeg writes progress to stderr continuously; for long encodes the
@@ -195,6 +234,7 @@ class TestCCTVArchiver(unittest.TestCase):
         # The app must not create pipes it never drains (deadlock tripwire)
         self.assertNotIn(subprocess.PIPE, popen_kwargs.values())
 
+    @patch('app.get_mp4_duration_seconds', return_value=3500.0)  # full hour -> delete path
     @patch('app.os.listdir', return_value=[
         "2026-02-07-09_segment_00000.ts",
         "2026-02-07-09_segment_00001.ts",
@@ -203,7 +243,7 @@ class TestCCTVArchiver(unittest.TestCase):
         "other_file.txt", # Should not be deleted
     ])
     @patch('app.os.remove')
-    def test_check_consolidation_status_success(self, mock_remove, mock_listdir):
+    def test_check_consolidation_status_success(self, mock_remove, mock_listdir, _mock_duration):
         mock_proc = MagicMock()
         mock_proc.poll.return_value = 0 # Process finished successfully
         mock_proc.returncode = 0 # Set the returncode attribute
@@ -224,6 +264,85 @@ class TestCCTVArchiver(unittest.TestCase):
         self.assertNotIn(unittest.mock.call("/test_archive/other_file.txt"), calls)
         
         self.assertEqual(mock_remove.call_count, 3) # Only 3 files should be deleted
+
+    @patch('builtins.open')
+    @patch('app.os.remove')
+    @patch('app.os.listdir', return_value=[
+        "2026-02-07-09_segment_00000.ts",
+        "playlist_2026-02-07-09.m3u8",
+        "archive_2026-02-07-09.mp4",
+    ])
+    @patch('app.get_mp4_duration_seconds', return_value=120.0)  # ~2 min: incomplete hour
+    def test_check_consolidation_status_short_keeps_sources(
+            self, _mock_duration, mock_listdir, mock_remove, mock_open):
+        """A restart-mid-hour produces a short archive. The duration gate must
+        keep the HLS sources (only evidence of that window) and drop a
+        .keep_<hour> marker instead of deleting anything."""
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = 0
+        mock_proc.returncode = 0
+        mock_proc.communicate.return_value = (b'stdout', b'stderr')
+        app.consolidation_processes = {"2026-02-07-09": mock_proc}
+        app.ARCHIVE_PATH = "/test_archive"
+
+        app.check_consolidation_status()
+
+        self.assertNotIn("2026-02-07-09", app.consolidation_processes)
+        mock_remove.assert_not_called()  # nothing deleted
+        mock_open.assert_called_once_with("/test_archive/.keep_2026-02-07-09", "w")
+
+    @patch('builtins.open')
+    @patch('app.os.remove')
+    @patch('app.get_mp4_duration_seconds', return_value=None)  # ffprobe failed
+    def test_check_consolidation_status_unknown_duration_keeps_sources(
+            self, _mock_duration, mock_remove, mock_open):
+        """ffprobe failure must fail safe: sources kept, marker written."""
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = 0
+        mock_proc.returncode = 0
+        mock_proc.communicate.return_value = (b'stdout', b'stderr')
+        app.consolidation_processes = {"2026-02-07-09": mock_proc}
+        app.ARCHIVE_PATH = "/test_archive"
+
+        app.check_consolidation_status()
+
+        mock_remove.assert_not_called()
+        mock_open.assert_called_once_with("/test_archive/.keep_2026-02-07-09", "w")
+
+    @patch('app.subprocess.run', side_effect=OSError('ffprobe missing'))
+    def test_get_mp4_duration_seconds_fail_safe(self, _mock_run):
+        self.assertIsNone(app.get_mp4_duration_seconds("/tmp/whatever.mp4"))
+
+    @patch('app.os.path.getsize', return_value=1024)
+    @patch('app.os.path.exists')
+    @patch('app.os.listdir')
+    @patch('app.os.remove')
+    def test_purge_skips_hours_with_keep_marker(
+            self, mock_remove, mock_listdir, mock_exists, mock_getsize):
+        """purge_orphaned_files must never touch hours flagged incomplete."""
+        def exists_side_effect(path):
+            if path == "/test_archive":
+                return True
+            return path.endswith(".keep_2026-02-07-06")
+        mock_exists.side_effect = exists_side_effect
+        mock_listdir.return_value = [
+            "archive_2026-02-07-05.mp4",       # complete hour
+            "archive_2026-02-07-06.mp4",       # incomplete hour (keep marker)
+            "2026-02-07-05_segment_00001.ts",  # -> deleted
+            "playlist_2026-02-07-05.m3u8",     # -> deleted
+            "2026-02-07-06_segment_00001.ts",  # -> kept
+            "playlist_2026-02-07-06.m3u8",     # -> kept
+        ]
+        app.ARCHIVE_PATH = "/test_archive"
+
+        deleted_count, deleted_size = app.purge_orphaned_files()
+
+        self.assertEqual(deleted_count, 2)
+        deleted_files = [call[0][0] for call in mock_remove.call_args_list]
+        self.assertIn("/test_archive/2026-02-07-05_segment_00001.ts", deleted_files)
+        self.assertIn("/test_archive/playlist_2026-02-07-05.m3u8", deleted_files)
+        self.assertNotIn("/test_archive/2026-02-07-06_segment_00001.ts", deleted_files)
+        self.assertNotIn("/test_archive/playlist_2026-02-07-06.m3u8", deleted_files)
 
     @patch('app.os.listdir', return_value=[
         "archive_2026-02-07-09.mp4",
@@ -326,12 +445,14 @@ class TestCCTVArchiver(unittest.TestCase):
         self.assertNotIn("/test_archive/archive_recent.mp4", deleted)  # recent -> kept
         self.assertEqual(mock_remove.call_count, 1)
 
-    @patch('app.os.path.exists', return_value=True)
+    @patch('app.os.path.exists')
     @patch('app.os.listdir')
     @patch('app.os.path.getsize')
     @patch('app.os.remove')
     def test_purge_orphaned_files_with_orphans(self, mock_remove, mock_getsize, mock_listdir, mock_exists):
         """Test purge identifies and deletes HLS files that have corresponding MP4s."""
+        # Only the archive root itself "exists"; no .keep_ markers are present.
+        mock_exists.side_effect = lambda p: p == "/test_archive"
         # Setup: MP4s exist for hours 05, 06, and 07 (all old enough to delete HLS files)
         # HLS files for these hours should be deleted
         # HLS files for hour 08 without MP4 should NOT be deleted
@@ -410,12 +531,14 @@ class TestCCTVArchiver(unittest.TestCase):
         self.assertEqual(deleted_size, 0)
 
     @patch('app.datetime')
-    @patch('app.os.path.exists', return_value=True)
+    @patch('app.os.path.exists')
     @patch('app.os.listdir')
     @patch('app.os.path.getsize')
     @patch('app.os.remove')
     def test_purge_orphaned_files_excludes_recent_hours(self, mock_remove, mock_getsize, mock_listdir, mock_exists, mock_datetime):
         """Test that purge excludes files from recent hours (current + previous 2 hours)."""
+        # Only the archive root itself "exists"; no .keep_ markers are present.
+        mock_exists.side_effect = lambda p: p == "/test_archive"
         # Mock current time to Feb 16, 2026, 13:00:00
         mock_datetime.utcnow.return_value = datetime(2026, 2, 16, 13, 0, 0)
         

@@ -23,7 +23,13 @@ async def token_guard(request: Request, call_next):
     expected = get_token()
     if not expected:
         return await call_next(request)
-    got = request.query_params.get('token') or request.headers.get('x-cctv-token')
+    got = (request.query_params.get('token')
+           or request.headers.get('x-cctv-token')
+           or request.cookies.get('cctv_token'))
+    # Cookie branch exists so HLS segment requests authenticate: hls.js (and
+    # native <video>) fetch the .ts URLs straight from the playlist body,
+    # which carries no query string or headers. Cookies go along automatically
+    # on same-origin requests; the UI mirrors the token into one on entry.
     if got != expected:
         return JSONResponse({'detail': 'unauthorized'}, status_code=401)
     return await call_next(request)

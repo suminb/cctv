@@ -25,6 +25,7 @@ The application is configured using environment variables:
 ## Web Viewer
 Port-forward: `kubectl -n cctv port-forward deploy/cctv-archiver 8080:8080`
 Open `http://localhost:8080`, enter token if set. No file selected = LIVE HLS. Click mp4 = play file. Click LIVE = back to live.
+`/` (UI shell) is public so the token prompt loads; `/api/*`, `/hls/*`, `/video/*` require token.
 
 ## Running the Application
 

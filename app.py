@@ -6,7 +6,11 @@ import signal
 import argparse
 from datetime import datetime, timedelta
 
-WEB_PORT = int(os.environ.get('WEB_PORT', '8080'))
+try:
+    WEB_PORT = int(os.environ.get('WEB_PORT', '8080'))
+except ValueError:
+    print(f"Warning: invalid WEB_PORT={os.environ.get('WEB_PORT')!r}, defaulting to 8080")
+    WEB_PORT = 8080
 
 def start_web_server():
     try:

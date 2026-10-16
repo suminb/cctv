@@ -16,6 +16,8 @@ COPY app.py web.py ./
 COPY static/ ./static/
 RUN pip install --no-cache-dir "fastapi>=0.110" "uvicorn[standard]>=0.29" "httpx>=0.27"
 
+EXPOSE 8080
+
 # 4. Set the command to run the Python script
 # Using -u for unbuffered output, which is good for logging in containers
 ENTRYPOINT ["python3", "-u", "app.py"]

@@ -1,0 +1,29 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: cctv-viewer
+  namespace: cctv
+  labels:
+    app: cctv-archiver
+  annotations:
+    # TLS (re-add once public DNS allows it):
+    #   cert-manager.io/cluster-issuer: letsencrypt-prod
+    #   + tls: [{hosts: [cctv.whiterabbit.co.kr], secretName: cctv-viewer-tls}]
+    # Requires a public record cctv.whiterabbit.co.kr -> hq.whiterabbit.co.kr
+    # (like zot/race-manager-dev). The wildcard currently resolves to private
+    # 172.23.0.26, which Let's Encrypt HTTP-01 rejects ("no valid A records").
+    # Until then: plain HTTP on the private LAN. Token auth is still enforced
+    # on /api/*, /hls/* and /video/*, so set CCTV_TOKEN (already in secret).
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: cctv.whiterabbit.co.kr
+      http:
+        paths:
+          - backend:
+              service:
+                name: cctv-viewer
+                port:
+                  number: 80
+            path: /
+            pathType: Prefix

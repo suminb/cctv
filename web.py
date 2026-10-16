@@ -2,6 +2,8 @@
 import os
 from fastapi import FastAPI, Query, Request
 from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse
+import pathlib
 import app as archiver
 
 def get_token() -> str:
@@ -52,3 +54,32 @@ def api_files(date: str | None = Query(default=None)):
             continue
     out.sort(key=lambda f: f['name'], reverse=True)
     return out
+
+STATIC_DIR = os.path.join(os.path.dirname(__file__), 'static')
+
+@app.get('/hls/{filename}')
+def serve_hls(filename: str):
+    base = os.path.basename(filename)
+    if base != filename or not (base.endswith('.m3u8') or base.endswith('.ts')):
+        return JSONResponse({'detail': 'not found'}, status_code=404)
+    if '_segment_' not in base and not base.startswith('playlist_'):
+        return JSONResponse({'detail': 'not found'}, status_code=404)
+    p = os.path.join(get_archive_path(), base)
+    if not os.path.exists(p):
+        return JSONResponse({'detail': 'not found'}, status_code=404)
+    media = 'application/vnd.apple.mpegurl' if base.endswith('.m3u8') else 'video/mp2t'
+    return FileResponse(p, media_type=media)
+
+@app.get('/video/{name}')
+def serve_video(name: str):
+    base = os.path.basename(name)
+    if base != name or not (base.startswith('archive_') and base.endswith('.mp4')):
+        return JSONResponse({'detail': 'not found'}, status_code=404)
+    p = os.path.join(get_archive_path(), base)
+    if not os.path.exists(p):
+        return JSONResponse({'detail': 'not found'}, status_code=404)
+    return FileResponse(p, media_type='video/mp4')
+
+@app.get('/')
+def index():
+    return FileResponse(os.path.join(STATIC_DIR, 'index.html'), media_type='text/html')

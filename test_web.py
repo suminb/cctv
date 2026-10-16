@@ -70,3 +70,22 @@ class TestWebFiles(unittest.TestCase):
             c = TestClient(web.app)
             r = c.get('/api/files?date=2026-10-15')
             self.assertEqual([f['name'] for f in r.json()], ['archive_2026-10-15-10.mp4'])
+
+
+class TestWebStatic(unittest.TestCase):
+    def test_hls_rejects_traversal(self):
+        import web as _web
+        from fastapi.testclient import TestClient as _TC
+        with patch.object(_web, 'get_token', return_value=''):
+            c = _TC(_web.app)
+            r = c.get('/hls/../app.py')
+            self.assertIn(r.status_code, (400, 404))
+
+    def test_video_404_for_missing(self):
+        import web as _web
+        from fastapi.testclient import TestClient as _TC
+        with patch.object(_web, 'get_token', return_value=''), \
+             patch('os.path.exists', return_value=False):
+            c = _TC(_web.app)
+            r = c.get('/video/archive_2026-10-16-14.mp4')
+            self.assertEqual(r.status_code, 404)

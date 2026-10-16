@@ -123,3 +123,12 @@ class TestWebStatic(unittest.TestCase):
                 r = c.get(f'/video/{mp4}')
                 self.assertEqual(r.status_code, 200)
                 self.assertIn('mp4', r.headers.get('content-type', ''))
+
+
+class TestWebIndex(unittest.TestCase):
+    def test_index_serves_html(self):
+        with patch.object(web, 'get_token', return_value=''):
+            c = TestClient(web.app)
+            r = c.get('/')
+            self.assertEqual(r.status_code, 200)
+            self.assertIn('<video', r.text)

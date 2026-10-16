@@ -6,14 +6,15 @@ metadata:
   labels:
     app: cctv-archiver
   annotations:
-    # TLS (re-add once public DNS allows it):
-    #   cert-manager.io/cluster-issuer: letsencrypt-prod
-    #   + tls: [{hosts: [cctv.whiterabbit.co.kr], secretName: cctv-viewer-tls}]
-    # Requires a public record cctv.whiterabbit.co.kr -> hq.whiterabbit.co.kr
-    # (like zot/race-manager-dev). The wildcard currently resolves to private
-    # 172.23.0.26, which Let's Encrypt HTTP-01 rejects ("no valid A records").
-    # Until then: plain HTTP on the private LAN. Token auth is still enforced
-    # on /api/*, /hls/* and /video/*, so set CCTV_TOKEN (already in secret).
+    # The whiterabbit wildcard, pushed into cctv-viewer-tls by the certbot
+    # deploy hook on tinyservices (see hyperion
+    # sites/wrhq/services/certificates/README.md and
+    # ansible/playbooks/k8s-certs.yml; this secret is in k8s_cert_secrets).
+    # Deliberately NO cert-manager annotation: cctv.whiterabbit.co.kr is
+    # LAN-only, so the cluster's HTTP-01 issuer could never validate it and
+    # would just fight for ownership of the secret.
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
 spec:
   ingressClassName: nginx
   rules:
@@ -27,3 +28,7 @@ spec:
                   number: 80
             path: /
             pathType: Prefix
+  tls:
+    - hosts:
+        - cctv.whiterabbit.co.kr
+      secretName: cctv-viewer-tls

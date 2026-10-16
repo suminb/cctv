@@ -56,6 +56,15 @@ spec:
             # Optional: Set the retention period for video files
             - name: RETENTION_DAYS
               value: "90"
+            - name: CCTV_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: cctv-rtsp-secret
+                  key: CCTV_TOKEN
+                  optional: true
+          ports:
+            - containerPort: 8080
+              name: http
           # --- Volume Mounting ---
           volumeMounts:
             - name: archive-storage

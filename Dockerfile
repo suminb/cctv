@@ -2,13 +2,15 @@
 FROM jrottenberg/ffmpeg:5.1-alpine
 
 # 1. Install Python
-RUN apk add --no-cache python3
+RUN apk add --no-cache python3 py3-pip
 
 # 2. Set up the working directory
 WORKDIR /app
 
 # 3. Copy the application script into the container
-COPY app.py .
+COPY app.py web.py ./
+COPY static/ ./static/
+RUN pip3 install --no-cache-dir fastapi uvicorn httpx
 
 # 4. Set the command to run the Python script
 # Using -u for unbuffered output, which is good for logging in containers

@@ -6,6 +6,16 @@ import signal
 import argparse
 from datetime import datetime, timedelta
 
+WEB_PORT = int(os.environ.get('WEB_PORT', '8080'))
+
+def start_web_server():
+    try:
+        import uvicorn
+        import web as viewer
+        uvicorn.run(viewer.app, host='0.0.0.0', port=WEB_PORT, log_level='info')
+    except Exception as e:
+        print(f'Web UI failed to start: {e}')
+
 # --- Configuration ---
 RTSP_URL = os.environ.get("RTSP_URL")
 ARCHIVE_PATH = os.environ.get("ARCHIVE_PATH", "/archive")
@@ -358,6 +368,10 @@ def main():
 
     signal.signal(signal.SIGINT, handle_shutdown_signal)
     signal.signal(signal.SIGTERM, handle_shutdown_signal)
+
+    import threading
+    threading.Thread(target=start_web_server, daemon=True).start()
+    print(f'Web viewer on :{WEB_PORT}')
 
     print("CCTV Archiver starting up with hourly MP4 consolidation.")
 

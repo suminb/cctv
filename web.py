@@ -16,6 +16,8 @@ app = FastAPI(title='cctv-viewer')
 async def token_guard(request: Request, call_next):
     if request.url.path in ('/docs', '/openapi.json', '/redoc'):
         return await call_next(request)
+    if request.method == 'GET' and request.url.path == '/':
+        return await call_next(request)
     expected = get_token()
     if not expected:
         return await call_next(request)

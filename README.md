@@ -19,6 +19,12 @@ The application is configured using environment variables:
 - `RTSP_URL` (required): The RTSP stream URL to capture
 - `ARCHIVE_PATH` (optional): Directory path for storing archived files (default: `/archive`)
 - `RETENTION_DAYS` (optional): Number of days to keep archived files (default: 90)
+- `CCTV_TOKEN` (optional): shared password for the web viewer. Empty = open. Set via secret.
+- `WEB_PORT` (optional): viewer port (default: 8080).
+
+## Web Viewer
+Port-forward: `kubectl -n cctv port-forward deploy/cctv-archiver 8080:8080`
+Open `http://localhost:8080`, enter token if set. No file selected = LIVE HLS. Click mp4 = play file. Click LIVE = back to live.
 
 ## Running the Application
 
